@@ -8,12 +8,17 @@ import io.ktor.server.routing.*
 fun Application.configureRouting() {
     routing {
         get("/") {
-            call.respondResource("/content/index.html") {
-
-            }
+            call.respondResource("/content/index.html")
         }
         staticResources("/content/static", "/static") {
             enableAutoHeadResponse()
         }
+        route("/api/v1/") {
+            apiRouting()
+        }
     }
+}
+
+private fun Route.apiRouting() {
+
 }

@@ -1,7 +1,6 @@
 package com.fantamomo.hc.dns.task.init
 
 import com.fantamomo.hc.dns.db.ForkTable
-import com.fantamomo.hc.dns.db.HeadTable
 import com.fantamomo.hc.dns.db.UserTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.task.InitTask
@@ -21,8 +20,7 @@ object InitDatabaseTablesTask : InitTask(
             DatabaseManager.transaction {
                 SchemaUtils.create(
                     UserTable,
-                    ForkTable,
-                    HeadTable
+                    ForkTable
                 )
             }
         } catch (e: Exception) {
