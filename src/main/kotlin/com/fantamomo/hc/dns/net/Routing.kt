@@ -1,4 +1,4 @@
-package com.fantamomo.hc
+package com.fantamomo.hc.dns.net
 
 import io.ktor.server.application.*
 import io.ktor.server.response.*

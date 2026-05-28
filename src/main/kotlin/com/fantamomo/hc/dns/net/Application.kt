@@ -1,10 +1,9 @@
-package com.fantamomo.hc
+package com.fantamomo.hc.dns.net
 
-import io.ktor.server.application.Application
+import io.ktor.server.application.*
 
-fun Application.rootModule() {
+suspend fun Application.rootModule() {
     configureExposed()
-    configurePostgres()
     configureRateLimiting()
     configureHttp()
     configureMonitoring()

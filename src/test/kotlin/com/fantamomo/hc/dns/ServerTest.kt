@@ -1,9 +1,11 @@
-package com.fantamomo.hc
+package com.fantamomo.hc.dns
 
-import io.ktor.client.request.get
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.testing.testApplication
-import kotlin.test.*
+import com.fantamomo.hc.dns.net.rootModule
+import io.ktor.client.request.*
+import io.ktor.http.*
+import io.ktor.server.testing.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 class ServerTest {
 

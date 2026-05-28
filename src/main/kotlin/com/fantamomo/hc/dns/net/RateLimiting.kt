@@ -1,10 +1,10 @@
-package com.fantamomo.hc
+package com.fantamomo.hc.dns.net
 
-import io.github.flaxoos.ktor.server.plugins.ratelimiter.*
-import io.github.flaxoos.ktor.server.plugins.ratelimiter.implementations.*
+import io.github.flaxoos.ktor.server.plugins.ratelimiter.RateLimiting
+import io.github.flaxoos.ktor.server.plugins.ratelimiter.implementations.TokenBucket
 import io.ktor.server.application.*
 import io.ktor.server.routing.*
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.minutes
 
 fun Application.configureRateLimiting() {
     routing {
@@ -12,8 +12,8 @@ fun Application.configureRateLimiting() {
             install(RateLimiting) {
                 rateLimiter {
                     type = TokenBucket::class
-                    capacity = 100
-                    rate = 10.seconds
+                    capacity = 60
+                    rate = 1.minutes
                 }
             }
         }
