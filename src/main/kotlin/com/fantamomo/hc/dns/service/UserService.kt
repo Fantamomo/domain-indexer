@@ -41,6 +41,7 @@ object UserService {
                 this[UserTable.id] = it.id
                 this[UserTable.username] = it.username
                 this[UserTable.email] = it.email
+                this[UserTable.type] = it.type
                 this[UserTable.deleted] = true
             }
         }

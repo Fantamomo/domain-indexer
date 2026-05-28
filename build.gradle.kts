@@ -39,7 +39,7 @@ dependencies {
     implementation(libs.postgresql.r2dbc)
     implementation(libs.ucasoft.ktorSimpleCache)
     implementation(libs.ucasoft.ktorSimpleMemoryCache)
-    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0-0.6.x-compat")
     implementation("com.github.sya-ri:kgit:1.2.0")
 
     testImplementation(kotlin("test"))
