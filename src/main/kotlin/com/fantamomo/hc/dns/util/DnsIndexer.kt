@@ -5,111 +5,52 @@ import kotlin.time.Instant
 
 object DnsIndexer {
 
-    fun processCommit(
-        repository: String,
-        branch: String,
+    fun processMainCommit(
         commit: String,
         timestamp: Instant,
-
         oldRecords: List<ParsedRecord>,
         newRecords: List<ParsedRecord>,
-
-        timelines: MutableMap<RecordKey, RecordTimeline>
+        mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
+        val oldMap = oldRecords.associateBy { RecordKey(it.host, it.name, it.type) }
+        val newMap = newRecords.associateBy { RecordKey(it.host, it.name, it.type) }
 
-        val oldMap = oldRecords.associateBy {
-            RecordKey(it.host, it.name, it.type)
-        }
-
-        val newMap = newRecords.associateBy {
-            RecordKey(it.host, it.name, it.type)
-        }
-
-        val allKeys = mutableSetOf<RecordKey>()
-
-        allKeys += oldMap.keys
-        allKeys += newMap.keys
-
-        for (key in allKeys) {
-
+        for (key in oldMap.keys + newMap.keys) {
             val old = oldMap[key]
             val new = newMap[key]
 
             when {
-
-                old == null && new != null -> {
-                    createRecord(
-                        repository,
-                        branch,
-                        commit,
-                        timestamp,
-                        key,
-                        new,
-                        timelines
-                    )
-                }
-
-                old != null && new == null -> {
-                    deleteRecord(
-                        commit,
-                        timestamp,
-                        key,
-                        timelines
-                    )
-                }
-
-                old != null && new != null -> {
-
-                    if (
-                        old.value != new.value ||
-                        old.ttl != new.ttl
-                    ) {
-                        updateRecord(
-                            repository,
-                            branch,
-                            commit,
-                            timestamp,
-                            key,
-                            old,
-                            new,
-                            timelines
-                        )
-                    }
-                }
+                old == null && new != null -> createMainRecord(
+                    commit, timestamp, key, new, mainTimelines
+                )
+                old != null && new == null -> deleteMainRecord(
+                    commit, timestamp, key, mainTimelines
+                )
+                old != null && new != null && (old.value != new.value || old.ttl != new.ttl) ->
+                    updateMainRecord(commit, timestamp, key, new, mainTimelines)
             }
         }
     }
 
-    private fun createRecord(
-        repository: String,
-        branch: String,
+    private fun createMainRecord(
         commit: String,
         timestamp: Instant,
         key: RecordKey,
         record: ParsedRecord,
-        timelines: MutableMap<RecordKey, RecordTimeline>
+        mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
-
-        val state =
-            if (repository == "hackclub/dns" && branch == "main") {
-                RecordState.ACTIVE
-            } else {
-                RecordState.DRAFT
-            }
-
         val version = RecordVersion(
             value = record.value,
             ttl = record.ttl,
             commit = commit,
-            repository = repository,
-            branch = branch,
+            repository = "hackclub/dns",
+            branch = "main",
             timestamp = timestamp
         )
-
-        val timeline = RecordTimeline(
+        mainTimelines[key] = RecordTimeline(
             key = key,
             current = version,
-            state = state,
+            state = RecordState.ACTIVE,
             timeline = mutableListOf(
                 TimelineEvent(
                     type = TimelineEventType.CREATED,
@@ -120,36 +61,26 @@ object DnsIndexer {
                 )
             )
         )
-
-        timelines[key] = timeline
     }
 
-    private fun updateRecord(
-        repository: String,
-        branch: String,
+    private fun updateMainRecord(
         commit: String,
         timestamp: Instant,
         key: RecordKey,
-        old: ParsedRecord,
-        new: ParsedRecord,
-        timelines: MutableMap<RecordKey, RecordTimeline>
+        record: ParsedRecord,
+        mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
-
-        val timeline = timelines[key] ?: return
-
+        val timeline = mainTimelines[key] ?: return
         val oldVersion = timeline.current
-
         val newVersion = RecordVersion(
-            value = new.value,
-            ttl = new.ttl,
+            value = record.value,
+            ttl = record.ttl,
             commit = commit,
-            repository = repository,
-            branch = branch,
+            repository = "hackclub/dns",
+            branch = "main",
             timestamp = timestamp
         )
-
         timeline.current = newVersion
-
         timeline.timeline += TimelineEvent(
             type = TimelineEventType.UPDATED,
             oldVersion = oldVersion,
@@ -159,17 +90,14 @@ object DnsIndexer {
         )
     }
 
-    private fun deleteRecord(
+    private fun deleteMainRecord(
         commit: String,
         timestamp: Instant,
         key: RecordKey,
-        timelines: MutableMap<RecordKey, RecordTimeline>
+        mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
-
-        val timeline = timelines[key] ?: return
-
+        val timeline = mainTimelines[key] ?: return
         timeline.state = RecordState.DELETED
-
         timeline.timeline += TimelineEvent(
             type = TimelineEventType.DELETED,
             oldVersion = timeline.current,
@@ -177,7 +105,149 @@ object DnsIndexer {
             commit = commit,
             timestamp = timestamp
         )
-
         timeline.current = null
     }
+
+    fun processForkDiff(
+        repository: String,
+        branch: String,
+        tipCommit: String,
+        tipTimestamp: Instant,
+        mergeBase: String,
+        mergeBaseRecords: Map<RecordKey, ParsedRecord>,
+        forkRecords: Map<RecordKey, ParsedRecord>,
+        forkProposals: MutableMap<ForkProposalKey, ForkProposal>
+    ) {
+        val allKeys = mergeBaseRecords.keys + forkRecords.keys
+
+        for (key in allKeys) {
+            val inBase = mergeBaseRecords[key]
+            val inFork = forkRecords[key]
+
+            val proposalKey = ForkProposalKey(key, repository, branch)
+
+            when {
+                inBase == null && inFork != null -> {
+                    upsertForkProposal(
+                        proposalKey = proposalKey,
+                        mergeBase = mergeBase,
+                        newState = ForkProposalState.DRAFT_ADDED,
+                        baseVersion = null,
+                        newVersion = inFork.toVersion(tipCommit, repository, branch, tipTimestamp),
+                        eventType = ForkProposalEventType.OPENED,
+                        commit = tipCommit,
+                        timestamp = tipTimestamp,
+                        forkProposals = forkProposals
+                    )
+                }
+
+                inBase != null && inFork == null -> {
+                    upsertForkProposal(
+                        proposalKey = proposalKey,
+                        mergeBase = mergeBase,
+                        newState = ForkProposalState.DRAFT_DELETED,
+                        baseVersion = inBase.toVersion(mergeBase, "hackclub/dns", "main", tipTimestamp),
+                        newVersion = null,
+                        eventType = ForkProposalEventType.OPENED,
+                        commit = tipCommit,
+                        timestamp = tipTimestamp,
+                        forkProposals = forkProposals
+                    )
+                }
+
+                inBase != null && inFork != null &&
+                        (inBase.value != inFork.value || inBase.ttl != inFork.ttl) -> {
+                    upsertForkProposal(
+                        proposalKey = proposalKey,
+                        mergeBase = mergeBase,
+                        newState = ForkProposalState.DRAFT_MODIFIED,
+                        baseVersion = inBase.toVersion(mergeBase, "hackclub/dns", "main", tipTimestamp),
+                        newVersion = inFork.toVersion(tipCommit, repository, branch, tipTimestamp),
+                        eventType = ForkProposalEventType.OPENED,
+                        commit = tipCommit,
+                        timestamp = tipTimestamp,
+                        forkProposals = forkProposals
+                    )
+                }
+
+                inBase != null && inFork != null -> {
+                    val existing = forkProposals[proposalKey]
+                    if (existing != null && existing.state !in setOf(
+                            ForkProposalState.MERGED,
+                            ForkProposalState.CLOSED
+                        )
+                    ) {
+                        existing.state = ForkProposalState.CLOSED
+                        existing.timeline += ForkProposalEvent(
+                            type = ForkProposalEventType.CLOSED,
+                            oldVersion = existing.current,
+                            newVersion = null,
+                            commit = tipCommit,
+                            timestamp = tipTimestamp
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun upsertForkProposal(
+        proposalKey: ForkProposalKey,
+        mergeBase: String,
+        newState: ForkProposalState,
+        baseVersion: RecordVersion?,
+        newVersion: RecordVersion?,
+        eventType: ForkProposalEventType,
+        commit: String,
+        timestamp: Instant,
+        forkProposals: MutableMap<ForkProposalKey, ForkProposal>
+    ) {
+        val existing = forkProposals[proposalKey]
+
+        if (existing == null) {
+            forkProposals[proposalKey] = ForkProposal(
+                key = proposalKey.recordKey,
+                repository = proposalKey.repository,
+                branch = proposalKey.branch,
+                mergeBase = mergeBase,
+                state = newState,
+                current = newVersion,
+                baseVersion = baseVersion,
+                timeline = mutableListOf(
+                    ForkProposalEvent(
+                        type = ForkProposalEventType.OPENED,
+                        oldVersion = null,
+                        newVersion = newVersion,
+                        commit = commit,
+                        timestamp = timestamp
+                    )
+                )
+            )
+        } else {
+            val oldVersion = existing.current
+            existing.state = newState
+            existing.current = newVersion
+            existing.timeline += ForkProposalEvent(
+                type = ForkProposalEventType.UPDATED,
+                oldVersion = oldVersion,
+                newVersion = newVersion,
+                commit = commit,
+                timestamp = timestamp
+            )
+        }
+    }
+
+    private fun ParsedRecord.toVersion(
+        commit: String,
+        repository: String,
+        branch: String,
+        timestamp: Instant
+    ) = RecordVersion(
+        value = value,
+        ttl = ttl,
+        commit = commit,
+        repository = repository,
+        branch = branch,
+        timestamp = timestamp
+    )
 }

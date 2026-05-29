@@ -4,5 +4,5 @@ data class RecordTimeline(
     val key: RecordKey,
     var current: RecordVersion?,
     var state: RecordState,
-    val timeline: MutableList<TimelineEvent>
+    val timeline: MutableList<TimelineEvent> = mutableListOf()
 )

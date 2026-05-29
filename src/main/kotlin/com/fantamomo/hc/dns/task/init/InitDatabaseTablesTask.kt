@@ -23,7 +23,9 @@ object InitDatabaseTablesTask : InitTask(
                     CommitTable,
                     CommitParentsTable,
                     RecordTable,
-                    RecordTimelineTable
+                    RecordTimelineTable,
+                    ForkProposalTable,
+                    ForkProposalTimelineTable
                 )
             }
         } catch (e: Exception) {

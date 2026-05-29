@@ -3,6 +3,9 @@ package com.fantamomo.hc.dns.task.init
 import com.fantamomo.hc.dns.service.GetForksService
 import com.fantamomo.hc.dns.task.InitTask
 import com.fantamomo.hc.dns.util.humanReadable
+import io.ktor.client.plugins.*
+import kotlinx.coroutines.delay
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTimedValue
 
 object GetForksInitTask : InitTask(
@@ -17,14 +20,29 @@ object GetForksInitTask : InitTask(
 
     override suspend fun run() {
         logger.info("Fetching forks")
+        var timeoutErrors = 0
         val (respond, duration) = measureTimedValue {
-            try {
-                GetForksService.getForks()
-            } catch (e: Exception) {
-                logger.error("Unexpected exception while fetching forks", e)
-                markFailed()
-                return
+            while (true) {
+                try {
+                    return@measureTimedValue GetForksService.getForks()
+                } catch (e: HttpRequestTimeoutException) {
+                    if (timeoutErrors > 5) {
+                        logger.error("Failed to fetch forks after 5 retries", e)
+                        markFailed()
+                        return
+                    }
+                    logger.warn("Request timed out, retrying in 10 seconds")
+                    timeoutErrors++
+                    delay(10.seconds)
+                } catch (e: Exception) {
+                    logger.error("Unexpected exception while fetching forks", e)
+                    markFailed()
+                    return
+                }
             }
+            // yeah it is unreachable, but the compiler thinks the type of respond is Any if we don't put this here
+            @Suppress("KotlinUnreachableCode")
+            throw IllegalStateException("Unreachable")
         }
         when (respond.status) {
             GetForksService.Status.NOT_MODIFIED -> {

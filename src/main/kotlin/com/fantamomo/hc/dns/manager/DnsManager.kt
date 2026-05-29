@@ -4,9 +4,7 @@ import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.ForkTable
 import com.fantamomo.hc.dns.db.UserTable
-import com.fantamomo.hc.dns.model.dns.ParsedRecord
-import com.fantamomo.hc.dns.model.dns.RecordKey
-import com.fantamomo.hc.dns.model.dns.RecordTimeline
+import com.fantamomo.hc.dns.model.dns.*
 import com.fantamomo.hc.dns.util.DnsIndexer
 import com.fantamomo.hc.dns.util.DnsParser
 import com.fantamomo.hc.dns.util.yaml.YamlParser
@@ -18,114 +16,149 @@ import org.jetbrains.exposed.v1.r2dbc.select
 import org.slf4j.LoggerFactory
 import kotlin.time.Instant
 
+data class DnsIndex(
+    val mainTimelines: Map<RecordKey, RecordTimeline>,
+    val forkProposals: Map<ForkProposalKey, ForkProposal>
+)
+
 object DnsManager {
 
     private val logger = LoggerFactory.getLogger(DnsManager::class.java)
 
-    // cache: commit -> full parsed state at that point
     private val commitCache = mutableMapOf<String, Map<RecordKey, ParsedRecord>>()
 
-    // final result: full timelines
-    private val timelines = mutableMapOf<RecordKey, RecordTimeline>()
+    suspend fun index(): DnsIndex {
 
-    suspend fun index(): Map<RecordKey, RecordTimeline> {
+        val repoIdToRepo = loadRepoIdMap()
 
-        val commits = git.log {
-            all()
-        }.reversed()
+        val allCommits = git.log { all() }.reversed()
+        if (allCommits.isEmpty()) return DnsIndex(emptyMap(), emptyMap())
 
-        val head = git.repository.resolve("refs/heads/main").name // hackclub/dns main branch
-        val repoIdToRepo = mutableMapOf<Long, String>()
-        DatabaseManager.transaction {
-            val idToName = UserTable.select(UserTable.id, UserTable.username)
-                .map { it[UserTable.id] to it[UserTable.username] }
-                .toList()
-                .toMap()
+        val headHash = git.repository.resolve("refs/heads/main").name
 
-            ForkTable.select(ForkTable.id, ForkTable.userId, ForkTable.name)
-                .collect {
-                    val id = it[ForkTable.id]
-                    val userId = it[ForkTable.userId]
-                    val name = it[ForkTable.name]
+        val originRefs = git.repository.refDatabase
+            .getRefsByPrefix("refs/heads/")
+            .filter { it.name != "refs/heads/main" }
+            .associate { it.objectId.name to it.name.removePrefix("refs/heads/") }
 
-                    repoIdToRepo[id] = "${idToName[userId]}/$name"
-                }
+        val remoteRefs = git.repository.refDatabase
+            .getRefsByPrefix("refs/remotes/fork/")
+            .associate { it.objectId.name to it.name.removePrefix("refs/remotes/fork/").substringAfter('/') }
+
+        val mainTimelines = mutableMapOf<RecordKey, RecordTimeline>()
+        var previousMainState: Map<RecordKey, ParsedRecord> = emptyMap()
+
+        val mainCommits = allCommits.filter { commit ->
+            val hash = commit.id.name
+            hash == headHash || SharedValues.commitGraphAnalyzer.isAncestorOf(hash, headHash)
         }
 
-        val originRefs =
-            git.repository.refDatabase.getRefsByPrefix("refs/heads/").filter { it.name != "refs/heads/main" }
-                .associate { it.objectId.name to it.name }
-        val remoteRefs =
-            git.repository.refDatabase.getRefsByPrefix("refs/remotes/fork/").associate { it.objectId.name to it.name }
-
-        if (commits.isEmpty()) return emptyMap()
-
-        var previousState: Map<RecordKey, ParsedRecord> = emptyMap()
-
-        for (commit in commits) {
-
+        for (commit in mainCommits) {
             val currentState = loadCommitState(commit)
+            DnsIndexer.processMainCommit(
+                commit = commit.id.name,
+                timestamp = Instant.fromEpochSeconds(commit.commitTime.toLong()),
+                oldRecords = previousMainState.values.toList(),
+                newRecords = currentState.values.toList(),
+                mainTimelines = mainTimelines
+            )
+            previousMainState = currentState
+        }
 
-            val commitHash = commit.id.name
-            val (repo, branch) = if (SharedValues.commitGraphAnalyzer.isAncestorOf(head, commitHash)) {
-                "hackclub/dns" to "main"
-            } else {
-                val originEntry =
-                    originRefs.entries.find { SharedValues.commitGraphAnalyzer.isAncestorOf(it.key, commitHash) }
-                        ?.let {
-                            "hackclub/dns" to it.value.removePrefix("refs/heads/")
-                        }
-                if (originEntry != null) originEntry
-                else {
-                    val entry =
-                        remoteRefs.entries.find {
-                            SharedValues.commitGraphAnalyzer.isAncestorOf(
-                                it.key,
-                                commitHash
-                            )
-                        }
-                    if (entry == null) {
-                        logger.warn("Commit $commitHash is not in any fork, skipping")
-                        continue
-                    }
-                    val name = entry.value.removePrefix("refs/remotes/fork/").substringAfter('/')
-                    val repoId = name.substringBefore('/').toLongOrNull()
-                    if (repoId == null) {
-                        logger.warn("Invalid fork name: $name, skipping")
-                        continue
-                    }
-                    val repo = repoIdToRepo[repoId]
-                    if (repo == null) {
-                        logger.warn("Unknown fork id: $repoId, skipping")
-                        continue
-                    }
-                    repo to name.substringAfter('/')
-                }
+        logger.info("Main-branch has been indexed: ${mainTimelines.size} record")
+
+        val forkProposals = mutableMapOf<ForkProposalKey, ForkProposal>()
+
+        for ((tipHash, branchName) in originRefs) {
+            processForkBranch(
+                repository = "hackclub/dns",
+                branch = branchName,
+                tipHash = tipHash,
+                headHash = headHash,
+                forkProposals = forkProposals
+            )
+        }
+
+        for ((tipHash, path) in remoteRefs) {
+            val forkId = path.substringBefore('/').toLongOrNull()
+            val branchName = path.substringAfter('/')
+
+            if (forkId == null) {
+                logger.warn("Illegal fork path $path, skipping")
+                continue
             }
 
-            DnsIndexer.processCommit(
-                repository = repo,
-                branch = branch,
-                commit = commitHash,
-                timestamp = Instant.fromEpochSeconds(commit.commitTime.toLong()),
+            val repoName = repoIdToRepo[forkId]
+            if (repoName == null) {
+                logger.warn("Unknown fork ID: $forkId, skipping")
+                continue
+            }
 
-                oldRecords = previousState.values.toList(),
-                newRecords = currentState.values.toList(),
-
-                timelines = timelines
+            processForkBranch(
+                repository = repoName,
+                branch = branchName,
+                tipHash = tipHash,
+                headHash = headHash,
+                forkProposals = forkProposals
             )
-
-            previousState = currentState
         }
 
-        return timelines
+        logger.info("Found ${forkProposals.size} Fork-Proposals")
+
+        return DnsIndex(mainTimelines, forkProposals)
     }
 
-    /**
-     * Builds full YAML state for a commit (merged view of all *.yaml files)
-     */
-    private fun loadCommitState(commit: RevCommit): Map<RecordKey, ParsedRecord> {
+    private fun processForkBranch(
+        repository: String,
+        branch: String,
+        tipHash: String,
+        headHash: String,
+        forkProposals: MutableMap<ForkProposalKey, ForkProposal>
+    ) {
+        if (SharedValues.commitGraphAnalyzer.isAncestorOf(tipHash, headHash)) {
+            logger.debug("Fork $repository:$branch tip $tipHash found in main ancestry, skipping")
+            return
+        }
 
+        val mergeBaseHash = SharedValues.commitGraphAnalyzer.mergeBase(tipHash, headHash)
+        if (mergeBaseHash == null) {
+            logger.warn("No merge-base for $repository:$branch ($tipHash), skipping")
+            return
+        }
+
+        val tipCommit = resolveCommit(tipHash) ?: run {
+            logger.warn("Commit $tipHash not resolvable, skipping")
+            return
+        }
+
+        val mergeBaseState = resolveCommit(mergeBaseHash)
+            ?.let { loadCommitState(it) }
+            ?: emptyMap<RecordKey, ParsedRecord>().also {
+                logger.warn("merge-base $mergeBaseHash not resolvable, taking empty state")
+            }
+
+        val forkState = loadCommitState(tipCommit)
+
+        DnsIndexer.processForkDiff(
+            repository = repository,
+            branch = branch,
+            tipCommit = tipHash,
+            tipTimestamp = Instant.fromEpochSeconds(tipCommit.commitTime.toLong()),
+            mergeBase = mergeBaseHash,
+            mergeBaseRecords = mergeBaseState,
+            forkRecords = forkState,
+            forkProposals = forkProposals
+        )
+    }
+
+    private fun resolveCommit(hash: String): RevCommit? = try {
+        git.repository.resolve(hash)?.let { git.repository.parseCommit(it) }
+    } catch (e: Exception) {
+        logger.warn("Error while resolving $hash", e)
+        null
+    }
+
+    private fun loadCommitState(commit: RevCommit): Map<RecordKey, ParsedRecord> {
         val hash = commit.id.name
         commitCache[hash]?.let { return it }
 
@@ -137,13 +170,10 @@ object DnsManager {
         }
 
         while (treeWalk.next()) {
-
             val path = treeWalk.pathString
-            if (!path.endsWith(".yaml")) continue
-            if (path.contains('/')) continue
+            if (!path.endsWith(".yaml") || path.contains('/')) continue
 
             val host = path.removeSuffix(".yaml")
-
             val objectId = treeWalk.getObjectId(0)
             val loader = git.repository.open(objectId)
 
@@ -151,21 +181,30 @@ object DnsManager {
                 YamlParser.parse(it)
             }
 
-            val records = DnsParser.parse(host, yaml)
-
-            for (r in records) {
-
-                val key = RecordKey(
-                    host = r.host,
-                    name = r.name,
-                    type = r.type
-                )
-
-                result[key] = r.run { ParsedRecord(host, name, type, value, ttl) }
+            for (r in DnsParser.parse(host, yaml)) {
+                result[RecordKey(r.host, r.name, r.type)] =
+                    ParsedRecord(r.host, r.name, r.type, r.value, r.ttl)
             }
         }
 
         commitCache[hash] = result
+        return result
+    }
+
+    private suspend fun loadRepoIdMap(): Map<Long, String> {
+        val result = mutableMapOf<Long, String>()
+        DatabaseManager.transaction {
+            val idToName = UserTable.select(UserTable.id, UserTable.username)
+                .map { it[UserTable.id] to it[UserTable.username] }
+                .toList()
+                .toMap()
+
+            ForkTable.select(ForkTable.id, ForkTable.userId, ForkTable.name)
+                .collect {
+                    result[it[ForkTable.id]] =
+                        "${idToName[it[ForkTable.userId]]}/${it[ForkTable.name]}"
+                }
+        }
         return result
     }
 }
