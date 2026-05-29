@@ -1,7 +1,6 @@
 package com.fantamomo.hc.dns.task.init
 
-import com.fantamomo.hc.dns.db.ForkTable
-import com.fantamomo.hc.dns.db.UserTable
+import com.fantamomo.hc.dns.db.*
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.task.InitTask
 import org.jetbrains.exposed.v1.r2dbc.SchemaUtils
@@ -20,7 +19,11 @@ object InitDatabaseTablesTask : InitTask(
             DatabaseManager.transaction {
                 SchemaUtils.create(
                     UserTable,
-                    ForkTable
+                    ForkTable,
+                    CommitTable,
+                    CommitParentsTable,
+                    RecordTable,
+                    RecordTimelineTable
                 )
             }
         } catch (e: Exception) {

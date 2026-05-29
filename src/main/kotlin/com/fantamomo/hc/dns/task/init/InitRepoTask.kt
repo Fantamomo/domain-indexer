@@ -3,6 +3,7 @@ package com.fantamomo.hc.dns.task.init
 import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.task.InitTask
+import com.fantamomo.hc.dns.util.KGitCommitGraphAnalyzer
 import com.fantamomo.hc.dns.util.humanReadable
 import com.github.syari.kgit.KGit
 import kotlin.io.path.Path
@@ -61,5 +62,8 @@ object InitRepoTask : InitTask(
             }
             logger.info("Repo cloned to: $repoDir")
         }
+        logger.info("Creating commit graph analyser")
+        SharedValues.commitGraphAnalyzer = KGitCommitGraphAnalyzer(SharedValues.git)
+        logger.info("Commit graph analyser created")
     }
 }

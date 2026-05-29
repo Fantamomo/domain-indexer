@@ -21,10 +21,12 @@ object App {
 
     val initTasks = listOf(
         ConnectDatabaseTask,
+        DnsIndexTask,
         GetForksInitTask,
         InitDatabaseTablesTask,
         InitForksTask,
         InitRepoTask,
+        SyncCommitsTask,
         UpdateUsersTask
     )
 

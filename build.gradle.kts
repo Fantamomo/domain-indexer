@@ -30,6 +30,7 @@ dependencies {
     implementation(libs.exposed.core)
     implementation(libs.exposed.r2dbc)
     implementation(libs.exposed.datetime)
+    implementation(libs.exposed.json)
     implementation(libs.flaxoos.ktor.server.rateLimiting)
     implementation(libs.h2database.h2)
     implementation(libs.h2database.r2dbc)

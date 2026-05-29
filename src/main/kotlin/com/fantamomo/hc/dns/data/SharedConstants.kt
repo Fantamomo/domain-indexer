@@ -11,6 +11,10 @@ object SharedConstants {
         prettyPrint = true
         ignoreUnknownKeys = true
     }
+    val jsonSQL = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
 
     val client = HttpClient {
         install(GitHubHelperKtorPlugin)
