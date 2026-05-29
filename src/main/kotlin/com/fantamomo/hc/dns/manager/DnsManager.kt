@@ -115,18 +115,22 @@ object DnsManager {
         headHash: String,
         forkProposals: MutableMap<ForkProposalKey, ForkProposal>
     ) {
-        if (SharedValues.commitGraphAnalyzer.isAncestorOf(tipHash, headHash)) {
-            logger.debug("Fork $repository:$branch tip $tipHash found in main ancestry, skipping")
+        if (SharedValues.commitGraphAnalyzer.isAncestorOf(headHash, tipHash)) {
+            logger.info("Fork $repository:$branch tip $tipHash found in main ancestry, skipping")
             return
         }
 
         val mergeBaseHash = SharedValues.commitGraphAnalyzer.mergeBase(tipHash, headHash)
         if (mergeBaseHash == null) {
+            // that should never happen, there are only two possibilities:
+            // 1. In the repo is a commit that has absolutely no connections to other commits
+            // 2. The CommitGraphAnalyzer is not up-to-date
             logger.warn("No merge-base for $repository:$branch ($tipHash), skipping")
             return
         }
 
         val tipCommit = resolveCommit(tipHash) ?: run {
+            // that should also never happen, but just in case
             logger.warn("Commit $tipHash not resolvable, skipping")
             return
         }
@@ -134,6 +138,7 @@ object DnsManager {
         val mergeBaseState = resolveCommit(mergeBaseHash)
             ?.let { loadCommitState(it) }
             ?: emptyMap<RecordKey, ParsedRecord>().also {
+                // that should also never happen, but just in case
                 logger.warn("merge-base $mergeBaseHash not resolvable, taking empty state")
             }
 

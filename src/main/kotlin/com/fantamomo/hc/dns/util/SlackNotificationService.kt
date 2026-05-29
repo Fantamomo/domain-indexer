@@ -4,7 +4,6 @@ import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.model.dns.ForkProposal
 import com.fantamomo.hc.dns.model.dns.RecordTimeline
-import com.fantamomo.hc.dns.model.dns.TimelineEventType
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -14,7 +13,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
-import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 object SlackNotificationService {
 
@@ -22,7 +23,7 @@ object SlackNotificationService {
 
     private const val MAX_TOTAL_BLOCKS = 50
     private const val MAX_SECTION_TEXT_LENGTH = 2800
-    private const val MAX_CHUNK_ITEMS = 12
+    private const val MAX_ITEMS_PER_CHUNK = 10
 
     @Serializable
     private data class SlackPayload(
@@ -51,64 +52,105 @@ object SlackNotificationService {
 
         val blocks = mutableListOf<JsonObject>()
 
-        blocks += headerBlock("DNS Record Changes Detected")
+        val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
+                newForkProposals.size + changedForkProposals.size + closedForkProposals.size
+        val summaryParts = buildList {
+            if (newRecords.isNotEmpty()) add("${newRecords.size} added")
+            if (changedRecords.isNotEmpty()) add("${changedRecords.size} changed")
+            if (removedRecords.isNotEmpty()) add("${removedRecords.size} removed")
+            if (newForkProposals.isNotEmpty()) add("${newForkProposals.size} new proposals")
+            if (changedForkProposals.isNotEmpty()) add("${changedForkProposals.size} updated proposals")
+            if (closedForkProposals.isNotEmpty()) add("${closedForkProposals.size} closed proposals")
+        }.joinToString(" · ")
+
+        blocks += headerBlock("DNS Changes — $totalChanges update${if (totalChanges != 1) "s" else ""}")
+        blocks += sectionBlock(summaryParts)
         blocks += dividerBlock()
 
         if (hasMainChanges) {
-            blocks += sectionBlock("*📄 Main Branch Records*")
+            if (newRecords.isNotEmpty()) {
+                appendRecordSection(blocks, "🟢  New records", newRecords) { rt ->
+                    val fqdn = formatFqdn(rt.key.name, rt.key.host)
+                    val v = rt.current
+                    if (v != null)
+                        "*$fqdn* `${rt.key.type}` → `${truncate(v.value, 120)}` _(ttl: ${v.ttl ?: "default"})_"
+                    else
+                        "*$fqdn* `${rt.key.type}`"
+                }
+            }
 
-            appendCategory(
-                blocks = blocks,
-                title = "🟢 *New Records* (${newRecords.size})",
-                emptyLabel = "_No new records_",
-                entries = newRecords.map { recordEntry(it, RecordChangeType.CREATED) }
-            )
+            if (changedRecords.isNotEmpty()) {
+                appendRecordSection(blocks, "🟡  Changed records", changedRecords) { rt ->
+                    val fqdn = formatFqdn(rt.key.name, rt.key.host)
+                    val lastUpdate = rt.timeline.lastOrNull()
+                    val old = lastUpdate?.oldVersion
+                    val new = lastUpdate?.newVersion ?: rt.current
+                    buildString {
+                        append("*$fqdn* `${rt.key.type}`")
+                        if (old != null && new != null) {
+                            append("\n~~`${truncate(old.value, 80)}`~~ → `${truncate(new.value, 80)}`")
+                        } else if (new != null) {
+                            append("\n`${truncate(new.value, 100)}`")
+                        }
+                    }
+                }
+            }
 
-            appendCategory(
-                blocks = blocks,
-                title = "🟡 *Changed Records* (${changedRecords.size})",
-                emptyLabel = "_No changed records_",
-                entries = changedRecords.map { recordEntry(it, RecordChangeType.CHANGED) }
-            )
-
-            appendCategory(
-                blocks = blocks,
-                title = "🔴 *Removed Records* (${removedRecords.size})",
-                emptyLabel = "_No removed records_",
-                entries = removedRecords.map { recordEntry(it, RecordChangeType.REMOVED) }
-            )
+            if (removedRecords.isNotEmpty()) {
+                appendRecordSection(blocks, "🔴  Removed records", removedRecords) { rt ->
+                    val fqdn = formatFqdn(rt.key.name, rt.key.host)
+                    val old = rt.timeline.lastOrNull()?.oldVersion ?: rt.current
+                    buildString {
+                        append("*$fqdn* `${rt.key.type}`")
+                        if (old != null) append("\n~~`${truncate(old.value, 100)}`~~")
+                    }
+                }
+            }
         }
 
         if (hasForkChanges) {
-            if (blocks.isNotEmpty() && blocks.lastOrNull()?.isDivider() != true) {
-                blocks += dividerBlock()
+            if (hasMainChanges && !blocks.lastOrNull().isDivider()) blocks += dividerBlock()
+
+            if (newForkProposals.isNotEmpty()) {
+                appendRecordSection(blocks, "🔀  New proposals", newForkProposals) { p ->
+                    val fqdn = formatFqdn(p.key.name, p.key.host)
+                    buildString {
+                        append("*$fqdn* `${p.key.type}` — `${sanitize(p.repository)}:${sanitize(p.branch)}`")
+                        p.baseVersion?.let { append("\nbase: `${truncate(it.value, 80)}`") }
+                        p.current?.let { append("\nproposed: `${truncate(it.value, 80)}`") }
+                    }
+                }
             }
 
-            blocks += sectionBlock("*🔀 Fork Proposals*")
+            if (changedForkProposals.isNotEmpty()) {
+                appendRecordSection(blocks, "🟡  Updated proposals", changedForkProposals) { p ->
+                    val fqdn = formatFqdn(p.key.name, p.key.host)
+                    val last = p.timeline.lastOrNull()
+                    buildString {
+                        append("*$fqdn* `${p.key.type}` — `${sanitize(p.repository)}:${sanitize(p.branch)}`")
+                        if (last?.oldVersion != null && last.newVersion != null) {
+                            append("\n~~`${truncate(last.oldVersion.value, 80)}`~~ → `${truncate(last.newVersion.value, 80)}`")
+                        } else {
+                            p.current?.let { append("\n`${truncate(it.value, 100)}`") }
+                        }
+                    }
+                }
+            }
 
-            appendCategory(
-                blocks = blocks,
-                title = "🟢 *New Proposals* (${newForkProposals.size})",
-                emptyLabel = "_No new proposals_",
-                entries = newForkProposals.map { forkProposalEntry(it, RecordChangeType.CREATED) }
-            )
-
-            appendCategory(
-                blocks = blocks,
-                title = "🟡 *Updated Proposals* (${changedForkProposals.size})",
-                emptyLabel = "_No updated proposals_",
-                entries = changedForkProposals.map { forkProposalEntry(it, RecordChangeType.CHANGED) }
-            )
-
-            appendCategory(
-                blocks = blocks,
-                title = "🔴 *Closed / Removed Proposals* (${closedForkProposals.size})",
-                emptyLabel = "_No closed proposals_",
-                entries = closedForkProposals.map { forkProposalEntry(it, RecordChangeType.REMOVED) }
-            )
+            if (closedForkProposals.isNotEmpty()) {
+                appendRecordSection(blocks, "🔴  Closed proposals", closedForkProposals) { p ->
+                    val fqdn = formatFqdn(p.key.name, p.key.host)
+                    buildString {
+                        append("*$fqdn* `${p.key.type}` — `${sanitize(p.repository)}:${sanitize(p.branch)}`")
+                        p.current?.let { append("\n~~`${truncate(it.value, 100)}`~~") }
+                    }
+                }
+            }
         }
 
-        blocks += contextBlock("_Fantamomo DNS · ${Instant.now()}_")
+        val timestamp = ZonedDateTime.now(ZoneId.of("UTC"))
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'"))
+        blocks += contextBlock("Fantamomo DNS  ·  $timestamp")
 
         send(webhookUrl, blocks)
     }
@@ -117,28 +159,18 @@ object SlackNotificationService {
         sendDnsChangeNotification(newRecords = newRecords)
     }
 
-    private fun appendCategory(
+    private fun <T> appendRecordSection(
         blocks: MutableList<JsonObject>,
         title: String,
-        emptyLabel: String,
-        entries: List<String>
+        items: List<T>,
+        formatter: (T) -> String
     ) {
-        if (blocks.size >= MAX_TOTAL_BLOCKS) return
+        if (blocks.size >= MAX_TOTAL_BLOCKS - 2) return
 
-        blocks += sectionBlock(title)
+        blocks += sectionBlock("*$title* (${items.size})")
 
-        if (entries.isEmpty()) {
-            if (blocks.size < MAX_TOTAL_BLOCKS) {
-                blocks += sectionBlock(emptyLabel)
-            }
-            if (blocks.size < MAX_TOTAL_BLOCKS) {
-                blocks += dividerBlock()
-            }
-            return
-        }
-
-        val normalizedEntries = entries.map { sanitizeSlackText(it) }
-        var remaining = normalizedEntries
+        val entries = items.map { sanitize(formatter(it)) }
+        var remaining = entries
         var chunkIndex = 0
 
         while (remaining.isNotEmpty() && blocks.size < MAX_TOTAL_BLOCKS - 2) {
@@ -146,143 +178,42 @@ object SlackNotificationService {
             remaining = rest
             chunkIndex++
 
-            val chunkTitle = if (chunkIndex == 1) "" else "_Part $chunkIndex"
-            val chunkText = buildString {
-                if (chunkTitle.isNotBlank()) {
-                    append(chunkTitle).append("\n")
-                }
-                chunk.forEachIndexed { index, entry ->
+            val text = buildString {
+                if (chunkIndex > 1) append("_Part ${chunkIndex}_\n")
+                chunk.forEachIndexed { i, entry ->
                     append("• ").append(entry)
-                    if (index != chunk.lastIndex) append("\n")
+                    if (i != chunk.lastIndex) append("\n")
                 }
             }
 
-            blocks += sectionBlock(chunkText)
-
-            if (remaining.isNotEmpty() && blocks.size < MAX_TOTAL_BLOCKS - 2) {
-                blocks += dividerBlock()
-            }
+            blocks += sectionBlock(text)
         }
 
         if (remaining.isNotEmpty() && blocks.size < MAX_TOTAL_BLOCKS - 1) {
-            blocks += sectionBlock("_… and ${remaining.size} more entries were truncated due to space limitations._")
+            blocks += sectionBlock("_… and ${remaining.size} more not shown_")
         }
 
-        if (blocks.size < MAX_TOTAL_BLOCKS) {
-            blocks += dividerBlock()
-        }
+        if (blocks.size < MAX_TOTAL_BLOCKS) blocks += dividerBlock()
     }
 
     private fun takeChunk(items: List<String>): Pair<List<String>, List<String>> {
-        if (items.isEmpty()) return emptyList<String>() to emptyList()
-
         val chunk = mutableListOf<String>()
-        var currentLength = 0
-        var count = 0
+        var length = 0
 
         for (item in items) {
-            if (count >= MAX_CHUNK_ITEMS) break
-
-            val normalized = truncateToLength(item, 900)
-            val candidateLength = currentLength + normalized.length + 3
-
-            if (candidateLength > MAX_SECTION_TEXT_LENGTH && chunk.isNotEmpty()) break
-
-            chunk += normalized
-            currentLength += normalized.length + 3
-            count++
+            if (chunk.size >= MAX_ITEMS_PER_CHUNK) break
+            val line = truncate(item, 600)
+            val candidate = length + line.length + 3
+            if (candidate > MAX_SECTION_TEXT_LENGTH && chunk.isNotEmpty()) break
+            chunk += line
+            length += line.length + 3
         }
 
-        val rest = items.drop(chunk.size)
-        return chunk to rest
+        return chunk to items.drop(chunk.size)
     }
 
-    private fun recordEntry(rt: RecordTimeline, changeType: RecordChangeType): String {
-        val key = rt.key
-        val fqdn = "${key.name}.${key.host}"
-        val current = rt.current
-        val lastEvent = rt.timeline.lastOrNull { it.type == changeType.eventType }
-
-        val header = "*$fqdn* `${sanitizeSlackText(key.type.name)}`"
-
-        val details = when (changeType) {
-            RecordChangeType.CREATED -> {
-                if (current != null) {
-                    buildString {
-                        append("Value: `${sanitizeSlackText(current.value)}`\n")
-                        append("TTL: ${current.ttl ?: "default"}\n")
-                        append("Source: `${sanitizeSlackText(current.repository)}:${sanitizeSlackText(current.branch)}`")
-                    }
-                } else {
-                    "_no value_"
-                }
-            }
-
-            RecordChangeType.CHANGED -> {
-                val old = lastEvent?.oldVersion
-                val new = lastEvent?.newVersion ?: current
-
-                buildString {
-                    if (old != null) append("~~`${sanitizeSlackText(old.value)}`~~ → ")
-                    if (new != null) {
-                        append("`${sanitizeSlackText(new.value)}`\n")
-                        append("TTL: ${new.ttl ?: "default"}\n")
-                        append("Source: `${sanitizeSlackText(new.repository)}:${sanitizeSlackText(new.branch)}`")
-                    } else {
-                        append("_unknown_")
-                    }
-                }
-            }
-
-            RecordChangeType.REMOVED -> {
-                val old = lastEvent?.oldVersion ?: current
-                buildString {
-                    if (old != null) append("~~`${sanitizeSlackText(old.value)}`~~\n")
-                    append("_Record has been removed_")
-                }
-            }
-        }
-
-        return truncateToLength("$header\n$details", MAX_SECTION_TEXT_LENGTH)
-    }
-
-    private fun forkProposalEntry(proposal: ForkProposal, changeType: RecordChangeType): String {
-        val key = proposal.key
-        val fqdn = "${key.name}.${key.host}"
-
-        val header = "*$fqdn* `${sanitizeSlackText(key.type.name)}`"
-        val branchLine = "Branch: `${sanitizeSlackText(proposal.repository)}:${sanitizeSlackText(proposal.branch)}`"
-
-        val details = when (changeType) {
-            RecordChangeType.CREATED -> {
-                buildString {
-                    proposal.baseVersion?.let { append("Base: `${sanitizeSlackText(it.value)}`\n") }
-                    proposal.current?.let { append("Proposed: `${sanitizeSlackText(it.value)}`\n") }
-                    append("Merge-base: `${sanitizeSlackText(proposal.mergeBase)}`")
-                }
-            }
-
-            RecordChangeType.CHANGED -> {
-                val lastEvent = proposal.timeline.lastOrNull()
-                val old = lastEvent?.oldVersion
-                val new = lastEvent?.newVersion ?: proposal.current
-
-                buildString {
-                    if (old != null) append("~~`${sanitizeSlackText(old.value)}`~~ → ")
-                    if (new != null) append("`${sanitizeSlackText(new.value)}`\n")
-                    append(branchLine)
-                }
-            }
-
-            RecordChangeType.REMOVED -> {
-                buildString {
-                    proposal.current?.let { append("~~`${sanitizeSlackText(it.value)}`~~\n") }
-                    append("_Proposal closed / removed_")
-                }
-            }
-        }
-
-        return truncateToLength("$header\n$branchLine\n$details", MAX_SECTION_TEXT_LENGTH)
+    private fun formatFqdn(name: String, host: String): String {
+        return if (name == "@") host else "$name.$host"
     }
 
     private fun headerBlock(text: String): JsonObject =
@@ -292,7 +223,7 @@ object SlackNotificationService {
                 "text" to JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("plain_text"),
-                        "text" to JsonPrimitive(truncateToLength(sanitizeSlackText(text), 150)),
+                        "text" to JsonPrimitive(truncate(sanitize(text), 150)),
                         "emoji" to JsonPrimitive(true)
                     )
                 )
@@ -309,7 +240,7 @@ object SlackNotificationService {
                 "text" to JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("mrkdwn"),
-                        "text" to JsonPrimitive(truncateToLength(sanitizeSlackText(text), MAX_SECTION_TEXT_LENGTH))
+                        "text" to JsonPrimitive(truncate(sanitize(text), MAX_SECTION_TEXT_LENGTH))
                     )
                 )
             )
@@ -324,7 +255,7 @@ object SlackNotificationService {
                         JsonObject(
                             mapOf(
                                 "type" to JsonPrimitive("mrkdwn"),
-                                "text" to JsonPrimitive(truncateToLength(sanitizeSlackText(text), 300))
+                                "text" to JsonPrimitive(truncate(sanitize(text), 300))
                             )
                         )
                     )
@@ -338,12 +269,10 @@ object SlackNotificationService {
                 text = "DNS Change Notification",
                 blocks = blocks.take(MAX_TOTAL_BLOCKS)
             )
-
             val response = SharedConstants.client.post(webhookUrl) {
                 contentType(ContentType.Application.Json)
                 setBody(payload)
             }
-
             if (response.status.isSuccess()) {
                 logger.info("Slack notification sent successfully.")
             } else {
@@ -355,27 +284,19 @@ object SlackNotificationService {
         }
     }
 
-    private fun sanitizeSlackText(value: String): String {
-        return value
+    private fun sanitize(value: String): String =
+        value
             .replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]"), " ")
             .replace("\r\n", "\n")
             .replace("\r", "\n")
             .trim()
-    }
 
-    private fun truncateToLength(value: String, maxLength: Int): String {
+    private fun truncate(value: String, maxLength: Int): String {
         if (value.length <= maxLength) return value
         if (maxLength <= 1) return value.take(maxLength)
         return value.take(maxLength - 1) + "…"
     }
 
-    private fun JsonObject.isDivider(): Boolean {
-        return this["type"]?.jsonPrimitive?.content == "divider"
-    }
-
-    private enum class RecordChangeType(val eventType: TimelineEventType) {
-        CREATED(TimelineEventType.CREATED),
-        CHANGED(TimelineEventType.UPDATED),
-        REMOVED(TimelineEventType.DELETED),
-    }
+    private fun JsonObject?.isDivider(): Boolean =
+        this?.get("type")?.jsonPrimitive?.content == "divider"
 }

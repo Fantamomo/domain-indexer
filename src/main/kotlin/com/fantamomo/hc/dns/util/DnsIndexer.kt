@@ -169,24 +169,6 @@ object DnsIndexer {
                         forkProposals = forkProposals
                     )
                 }
-
-                inBase != null && inFork != null -> {
-                    val existing = forkProposals[proposalKey]
-                    if (existing != null && existing.state !in setOf(
-                            ForkProposalState.MERGED,
-                            ForkProposalState.CLOSED
-                        )
-                    ) {
-                        existing.state = ForkProposalState.CLOSED
-                        existing.timeline += ForkProposalEvent(
-                            type = ForkProposalEventType.CLOSED,
-                            oldVersion = existing.current,
-                            newVersion = null,
-                            commit = tipCommit,
-                            timestamp = tipTimestamp
-                        )
-                    }
-                }
             }
         }
     }

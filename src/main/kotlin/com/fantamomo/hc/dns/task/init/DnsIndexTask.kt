@@ -71,8 +71,7 @@ object DnsIndexTask : InitTask(
         )
 
         val newRecords = index.mainTimelines.values.filter {
-            it.key !in existingRecordKeys &&
-                    it.timeline.any { e -> e.type == TimelineEventType.CREATED }
+            it.key !in existingRecordKeys
         }
 
         val changedRecords = index.mainTimelines.values.filter {
@@ -80,26 +79,26 @@ object DnsIndexTask : InitTask(
             oldValue != null && oldValue != it.current
         }
 
-        val newForkProposals = index.forkProposals.values.filter {
-            val key = ForkProposalKey(it.key, it.repository, it.branch)
-            key !in existingForkKeys &&
-                    it.timeline.any { e -> e.type == ForkProposalEventType.OPENED }
+        val newForkProposals = index.forkProposals.values.filter { proposal ->
+            val key = ForkProposalKey(proposal.key, proposal.repository, proposal.branch)
+            key !in existingForkKeys
         }
 
-        val changedForkProposals = index.forkProposals.values.filter {
-            val key = ForkProposalKey(it.key, it.repository, it.branch)
-            val old = existingForks[key]
-            old != null && old != it.current
+        val changedForkProposals = index.forkProposals.values.filter { proposal ->
+            val key = ForkProposalKey(proposal.key, proposal.repository, proposal.branch)
+            val oldValue = existingForks[key]
+            oldValue != null && oldValue != proposal.current
         }
 
-        val closedForkProposals = index.forkProposals.values.filter {
-            it.timeline.any { e -> e.type == ForkProposalEventType.CLOSED }
+        val closedForkProposals = index.forkProposals.values.filter { proposal ->
+            val key = ForkProposalKey(proposal.key, proposal.repository, proposal.branch)
+            val wasOpen = existingForkKeys.contains(key)
+            wasOpen && proposal.state in setOf(ForkProposalState.MERGED, ForkProposalState.CLOSED)
         }
 
         val hasAnyChange =
             newRecords.isNotEmpty() ||
                     changedRecords.isNotEmpty() ||
-//                    removedRecords.isNotEmpty() ||
                     newForkProposals.isNotEmpty() ||
                     changedForkProposals.isNotEmpty() ||
                     closedForkProposals.isNotEmpty()
@@ -108,7 +107,7 @@ object DnsIndexTask : InitTask(
             SlackNotificationService.sendDnsChangeNotification(
                 newRecords = newRecords,
                 changedRecords = changedRecords,
-                removedRecords = emptyList(), // removedRecords,
+                removedRecords = emptyList(),
                 newForkProposals = newForkProposals,
                 changedForkProposals = changedForkProposals,
                 closedForkProposals = closedForkProposals,
