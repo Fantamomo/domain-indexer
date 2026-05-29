@@ -5,8 +5,10 @@ import org.eclipse.jgit.revwalk.RevCommit
 import java.util.*
 
 class KGitCommitGraphAnalyzer(
-    private val repo: KGit
+    private val commits: Iterable<RevCommit>
 ) {
+
+    constructor(git: KGit) : this(git.log { all() })
 
     private val hashToId = HashMap<String, Int>()
     private val idToHash = ArrayList<String>()
@@ -29,10 +31,6 @@ class KGitCommitGraphAnalyzer(
     }
 
     private fun buildGraph() {
-        val commits: Iterable<RevCommit> = repo.log {
-            all()
-        }
-
         for (commit in commits) {
             val hash = commit.name
             val id = getOrCreateId(hash)

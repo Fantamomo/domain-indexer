@@ -64,6 +64,13 @@ object Config {
         canBeSetByEnv = true
     )
 
+    val SLACK_WEB_HOOK_URL: String by string(
+        key = "slack.webhook.url",
+        default = "",
+        description = "The Slack webhook URL used to send notifications.",
+        canBeSetByEnv = true
+    )
+
     fun init() {
         if (properties.isNotEmpty()) return
         ensureConfigExists()

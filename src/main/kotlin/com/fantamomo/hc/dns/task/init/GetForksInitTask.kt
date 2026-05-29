@@ -24,7 +24,11 @@ object GetForksInitTask : InitTask(
         val (respond, duration) = measureTimedValue {
             while (true) {
                 try {
-                    return@measureTimedValue GetForksService.getForks()
+                    // we need to ignore the cache here because it could happen that one of the requests fails
+                    // with an HttpRequestTimeoutException, if we try again with the cache enabled,
+                    // we would make a second request, in this case the service would return that the cache is not modified
+                    // but due the failed request in the first place no cache is available, so we would end up with a failed task without any retries
+                    return@measureTimedValue GetForksService.getForks(ignoreCache = true)
                 } catch (e: HttpRequestTimeoutException) {
                     if (timeoutErrors > 5) {
                         logger.error("Failed to fetch forks after 5 retries", e)
@@ -34,6 +38,7 @@ object GetForksInitTask : InitTask(
                     logger.warn("Request timed out, retrying in 10 seconds")
                     timeoutErrors++
                     delay(10.seconds)
+                    logger.info("Retrying...")
                 } catch (e: Exception) {
                     logger.error("Unexpected exception while fetching forks", e)
                     markFailed()

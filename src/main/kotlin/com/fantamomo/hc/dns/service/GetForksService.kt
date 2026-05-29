@@ -30,7 +30,7 @@ object GetForksService {
 
     private val cache = ConcurrentHashMap<String, CacheEntry>()
 
-    suspend fun getForks(): ForkRespond {
+    suspend fun getForks(ignoreCache: Boolean = false): ForkRespond {
 
         val fetchedForks = mutableListOf<FetchedFork>()
 
@@ -44,7 +44,7 @@ object GetForksService {
 
         val firstUrl = "https://api.github.com/repos/hackclub/dns/forks?per_page=100"
 
-        val firstResponse = request(firstUrl)
+        val firstResponse = request(firstUrl, ignoreCache)
         totalRequests++
 
         totalPages = firstResponse.lastPageNumber()
@@ -72,7 +72,7 @@ object GetForksService {
             delay(delayBetweenRequests)
             totalWaitTime += delayBetweenRequests
 
-            val response = request(nextUrl)
+            val response = request(nextUrl, ignoreCache)
             totalRequests++
 
             when (val result = handleResponse(response, nextUrl)) {
@@ -114,7 +114,10 @@ object GetForksService {
         return forks
     }
 
-    private suspend fun request(url: String): HttpResponse {
+    private suspend fun request(url: String, ignoreCache: Boolean = false): HttpResponse {
+        if (ignoreCache) {
+            return SharedConstants.client.get(url)
+        }
 
         val cacheEntry = cache[url]
 
@@ -138,8 +141,12 @@ object GetForksService {
         return when (response.status.value) {
 
             200 -> {
+                val success = ResponseResult.Success(response.body())
+                // we only update cache after we got the response,
+                // because sometimes status code is 200 but an RequestTimeoutException is thrown while reading the body,
+                // and in that case we don't want to update the cache because we didn't get the new data
                 updateCache(url, response)
-                ResponseResult.Success(response.body())
+                success
             }
 
             304 -> {
