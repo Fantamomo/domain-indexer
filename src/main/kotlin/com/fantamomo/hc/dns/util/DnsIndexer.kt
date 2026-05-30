@@ -5,27 +5,32 @@ import kotlin.time.Instant
 
 object DnsIndexer {
 
+    data class ForkCommit(
+        val hash: String,
+        val timestamp: Instant,
+        val state: Map<RecordKey, ParsedRecord>
+    )
+
     fun processMainCommit(
         commit: String,
         timestamp: Instant,
-        oldRecords: List<ParsedRecord>,
-        newRecords: List<ParsedRecord>,
+        previousState: Map<RecordKey, ParsedRecord>,
+        currentState: Map<RecordKey, ParsedRecord>,
         mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
-        val oldMap = oldRecords.associateBy { RecordKey(it.host, it.name, it.type) }
-        val newMap = newRecords.associateBy { RecordKey(it.host, it.name, it.type) }
+        val allKeys = (previousState.keys + currentState.keys).toSet()
 
-        for (key in oldMap.keys + newMap.keys) {
-            val old = oldMap[key]
-            val new = newMap[key]
+        for (key in allKeys) {
+            val old = previousState[key]
+            val new = currentState[key]
 
             when {
-                old == null && new != null -> createMainRecord(
-                    commit, timestamp, key, new, mainTimelines
-                )
-                old != null && new == null -> deleteMainRecord(
-                    commit, timestamp, key, mainTimelines
-                )
+                old == null && new != null ->
+                    createMainRecord(commit, timestamp, key, new, mainTimelines)
+
+                old != null && new == null ->
+                    deleteMainRecord(commit, timestamp, key, mainTimelines)
+
                 old != null && new != null && (old.value != new.value || old.ttl != new.ttl) ->
                     updateMainRecord(commit, timestamp, key, new, mainTimelines)
             }
@@ -39,14 +44,7 @@ object DnsIndexer {
         record: ParsedRecord,
         mainTimelines: MutableMap<RecordKey, RecordTimeline>
     ) {
-        val version = RecordVersion(
-            value = record.value,
-            ttl = record.ttl,
-            commit = commit,
-            repository = "hackclub/dns",
-            branch = "main",
-            timestamp = timestamp
-        )
+        val version = record.toVersion(commit, "hackclub/dns", "main", timestamp)
         mainTimelines[key] = RecordTimeline(
             key = key,
             current = version,
@@ -72,14 +70,7 @@ object DnsIndexer {
     ) {
         val timeline = mainTimelines[key] ?: return
         val oldVersion = timeline.current
-        val newVersion = RecordVersion(
-            value = record.value,
-            ttl = record.ttl,
-            commit = commit,
-            repository = "hackclub/dns",
-            branch = "main",
-            timestamp = timestamp
-        )
+        val newVersion = record.toVersion(commit, "hackclub/dns", "main", timestamp)
         timeline.current = newVersion
         timeline.timeline += TimelineEvent(
             type = TimelineEventType.UPDATED,
@@ -108,117 +99,83 @@ object DnsIndexer {
         timeline.current = null
     }
 
-    fun processForkDiff(
+    fun processForkBranch(
         repository: String,
         branch: String,
-        tipCommit: String,
-        tipTimestamp: Instant,
         mergeBase: String,
+        mergeBaseState: Map<RecordKey, ParsedRecord>,
         mergeBaseTimestamp: Instant,
-        currentMainRecords: Map<RecordKey, ParsedRecord>,
-        forkRecords: Map<RecordKey, ParsedRecord>,
+        forkCommits: List<ForkCommit>,
         forkProposals: MutableMap<ForkProposalKey, ForkProposal>
     ) {
-        for (key in forkRecords.keys) {
-            val inMain = currentMainRecords[key]
-            val inFork = forkRecords[key]!!
+        val tipState = forkCommits.last().state
 
-            val proposalKey = ForkProposalKey(key, repository, branch)
+        val proposalKeys = (mergeBaseState.keys + tipState.keys).toSet().filter { key ->
+            val inBase = mergeBaseState[key]
+            val inTip = tipState[key]
+            inBase?.value != inTip?.value || inBase?.ttl != inTip?.ttl
+        }.toSet()
 
-            when {
-                inMain == null -> {
-                    upsertForkProposal(
-                        proposalKey = proposalKey,
-                        mergeBase = mergeBase,
-                        newState = ForkProposalState.DRAFT_ADDED,
-                        baseVersion = null,
-                        newVersion = inFork.toVersion(tipCommit, repository, branch, tipTimestamp),
-                        eventType = ForkProposalEventType.OPENED,
-                        commit = tipCommit,
-                        timestamp = tipTimestamp,
-                        forkProposals = forkProposals
-                    )
+        if (proposalKeys.isEmpty()) return
+
+        var previousState: Map<RecordKey, ParsedRecord> = mergeBaseState
+
+        for (forkCommit in forkCommits) {
+            val currentState = forkCommit.state
+
+            for (key in proposalKeys) {
+                val old = previousState[key]
+                val new = currentState[key]
+
+                if (old?.value == new?.value && old?.ttl == new?.ttl) continue
+
+                val proposalKey = ForkProposalKey(key, repository, branch)
+                val inBase = mergeBaseState[key]
+
+                val newState = when {
+                    new == null -> ForkProposalState.DRAFT_DELETED
+                    inBase == null -> ForkProposalState.DRAFT_ADDED
+                    else -> ForkProposalState.DRAFT_MODIFIED
                 }
 
-                inMain.value != inFork.value || inMain.ttl != inFork.ttl -> {
-                    upsertForkProposal(
-                        proposalKey = proposalKey,
+                val baseVersion = inBase?.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp)
+                val newVersion = new?.toVersion(forkCommit.hash, repository, branch, forkCommit.timestamp)
+
+                val existing = forkProposals[proposalKey]
+                if (existing == null) {
+                    forkProposals[proposalKey] = ForkProposal(
+                        key = key,
+                        repository = repository,
+                        branch = branch,
                         mergeBase = mergeBase,
-                        newState = ForkProposalState.DRAFT_MODIFIED,
-                        baseVersion = inMain.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp),
-                        newVersion = inFork.toVersion(tipCommit, repository, branch, tipTimestamp),
-                        eventType = ForkProposalEventType.OPENED,
-                        commit = tipCommit,
-                        timestamp = tipTimestamp,
-                        forkProposals = forkProposals
+                        state = newState,
+                        current = newVersion,
+                        baseVersion = baseVersion,
+                        timeline = mutableListOf(
+                            ForkProposalEvent(
+                                type = ForkProposalEventType.OPENED,
+                                oldVersion = null,
+                                newVersion = newVersion,
+                                commit = forkCommit.hash,
+                                timestamp = forkCommit.timestamp
+                            )
+                        )
+                    )
+                } else {
+                    val oldVersion = existing.current
+                    existing.state = newState
+                    existing.current = newVersion
+                    existing.timeline += ForkProposalEvent(
+                        type = ForkProposalEventType.UPDATED,
+                        oldVersion = oldVersion,
+                        newVersion = newVersion,
+                        commit = forkCommit.hash,
+                        timestamp = forkCommit.timestamp
                     )
                 }
             }
-        }
 
-        for (key in currentMainRecords.keys) {
-            if (key in forkRecords) continue
-
-            val inMain = currentMainRecords[key]!!
-            val proposalKey = ForkProposalKey(key, repository, branch)
-
-            upsertForkProposal(
-                proposalKey = proposalKey,
-                mergeBase = mergeBase,
-                newState = ForkProposalState.DRAFT_DELETED,
-                baseVersion = inMain.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp),
-                newVersion = null,
-                eventType = ForkProposalEventType.OPENED,
-                commit = tipCommit,
-                timestamp = tipTimestamp,
-                forkProposals = forkProposals
-            )
-        }
-    }
-
-    private fun upsertForkProposal(
-        proposalKey: ForkProposalKey,
-        mergeBase: String,
-        newState: ForkProposalState,
-        baseVersion: RecordVersion?,
-        newVersion: RecordVersion?,
-        eventType: ForkProposalEventType,
-        commit: String,
-        timestamp: Instant,
-        forkProposals: MutableMap<ForkProposalKey, ForkProposal>
-    ) {
-        val existing = forkProposals[proposalKey]
-
-        if (existing == null) {
-            forkProposals[proposalKey] = ForkProposal(
-                key = proposalKey.recordKey,
-                repository = proposalKey.repository,
-                branch = proposalKey.branch,
-                mergeBase = mergeBase,
-                state = newState,
-                current = newVersion,
-                baseVersion = baseVersion,
-                timeline = mutableListOf(
-                    ForkProposalEvent(
-                        type = eventType,
-                        oldVersion = null,
-                        newVersion = newVersion,
-                        commit = commit,
-                        timestamp = timestamp
-                    )
-                )
-            )
-        } else {
-            val oldVersion = existing.current
-            existing.state = newState
-            existing.current = newVersion
-            existing.timeline += ForkProposalEvent(
-                type = ForkProposalEventType.UPDATED,
-                oldVersion = oldVersion,
-                newVersion = newVersion,
-                commit = commit,
-                timestamp = timestamp
-            )
+            previousState = currentState
         }
     }
 

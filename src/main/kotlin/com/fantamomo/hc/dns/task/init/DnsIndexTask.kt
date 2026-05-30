@@ -118,7 +118,10 @@ object DnsIndexTask : InitTask(
             runCatching {
                 val dur = measureTime {
                     DatabaseManager.transaction {
-                        RecordTable.batchUpsert(index.mainTimelines.values, shouldReturnGeneratedValues = false) { record ->
+                        RecordTable.batchUpsert(
+                            index.mainTimelines.values,
+                            shouldReturnGeneratedValues = false
+                        ) { record ->
                             this[RecordTable.host] = record.key.host
                             this[RecordTable.name] = record.key.name
                             this[RecordTable.type] = record.key.type
@@ -158,17 +161,20 @@ object DnsIndexTask : InitTask(
         if (index.forkProposals.isNotEmpty()) {
             runCatching {
                 val dur = measureTime {
-                    DatabaseManager.transaction {
-                        ForkProposalTable.batchUpsert(index.forkProposals.values, shouldReturnGeneratedValues = false) { proposal ->
-                            this[ForkProposalTable.host] = proposal.key.host
-                            this[ForkProposalTable.name] = proposal.key.name
-                            this[ForkProposalTable.type] = proposal.key.type
-                            this[ForkProposalTable.repository] = proposal.repository
-                            this[ForkProposalTable.branch] = proposal.branch
-                            this[ForkProposalTable.mergeBase] = proposal.mergeBase
-                            this[ForkProposalTable.state] = proposal.state
-                            this[ForkProposalTable.currentValue] = proposal.current
-                            this[ForkProposalTable.baseValue] = proposal.baseVersion
+                    val chunked = index.forkProposals.values.chunked(5000)
+                    for (chunk in chunked) {
+                        DatabaseManager.transaction {
+                            ForkProposalTable.batchUpsert(chunk, shouldReturnGeneratedValues = false) { proposal ->
+                                this[ForkProposalTable.host] = proposal.key.host
+                                this[ForkProposalTable.name] = proposal.key.name
+                                this[ForkProposalTable.type] = proposal.key.type
+                                this[ForkProposalTable.repository] = proposal.repository
+                                this[ForkProposalTable.branch] = proposal.branch
+                                this[ForkProposalTable.mergeBase] = proposal.mergeBase
+                                this[ForkProposalTable.state] = proposal.state
+                                this[ForkProposalTable.currentValue] = proposal.current
+                                this[ForkProposalTable.baseValue] = proposal.baseVersion
+                            }
                         }
                     }
                 }
@@ -180,21 +186,27 @@ object DnsIndexTask : InitTask(
         if (proposalEvents.isNotEmpty()) {
             runCatching {
                 val dur = measureTime {
-                    DatabaseManager.transaction {
-                        ForkProposalTimelineTable.batchUpsert(
-                            proposalEvents,
-                            shouldReturnGeneratedValues = false
-                        ) { (key, event) ->
-                            this[ForkProposalTimelineTable.host] = key.recordKey.host
-                            this[ForkProposalTimelineTable.name] = key.recordKey.name
-                            this[ForkProposalTimelineTable.type] = key.recordKey.type
-                            this[ForkProposalTimelineTable.repository] = key.repository
-                            this[ForkProposalTimelineTable.branch] = key.branch
-                            this[ForkProposalTimelineTable.eventType] = event.type
-                            this[ForkProposalTimelineTable.oldValue] = event.oldVersion
-                            this[ForkProposalTimelineTable.newValue] = event.newVersion
-                            this[ForkProposalTimelineTable.commit] = event.commit
-                            this[ForkProposalTimelineTable.timestamp] = event.timestamp
+                    // yeah, it might seams that this is unnecessary, but it could lead to an OutOfMemoryError (no joke, it happend)
+                    val chunked = proposalEvents.chunked(10000)
+                    var patchCount = 0
+                    for (chunk in chunked) {
+                        DatabaseManager.transaction {
+                            ForkProposalTimelineTable.batchUpsert(
+                                chunk,
+                                shouldReturnGeneratedValues = false
+                            ) { (key, event) ->
+                                this[ForkProposalTimelineTable.host] = key.recordKey.host
+                                this[ForkProposalTimelineTable.name] = key.recordKey.name
+                                this[ForkProposalTimelineTable.type] = key.recordKey.type
+                                this[ForkProposalTimelineTable.repository] = key.repository
+                                this[ForkProposalTimelineTable.branch] = key.branch
+                                this[ForkProposalTimelineTable.eventType] = event.type
+                                this[ForkProposalTimelineTable.oldValue] = event.oldVersion
+                                this[ForkProposalTimelineTable.newValue] = event.newVersion
+                                this[ForkProposalTimelineTable.commit] = event.commit
+                                this[ForkProposalTimelineTable.timestamp] = event.timestamp
+                            }
+                            logger.info("Saved ${++patchCount} of ${chunked.size} chunks of proposal events")
                         }
                     }
                 }
