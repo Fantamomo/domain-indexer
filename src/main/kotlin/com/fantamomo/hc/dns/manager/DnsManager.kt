@@ -15,6 +15,7 @@ import org.eclipse.jgit.treewalk.TreeWalk
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.slf4j.LoggerFactory
 import kotlin.time.Instant
+import kotlin.time.toKotlinInstant
 
 data class DnsIndex(
     val mainTimelines: Map<RecordKey, RecordTimeline>,
@@ -65,6 +66,8 @@ object DnsManager {
             previousMainState = currentState
         }
 
+        val currentMainState = previousMainState
+
         logger.info("Main-branch has been indexed: ${mainTimelines.size} record")
 
         val forkProposals = mutableMapOf<ForkProposalKey, ForkProposal>()
@@ -75,6 +78,7 @@ object DnsManager {
                 branch = branchName,
                 tipHash = tipHash,
                 headHash = headHash,
+                currentMainState = currentMainState,
                 forkProposals = forkProposals
             )
         }
@@ -99,6 +103,7 @@ object DnsManager {
                 branch = branchName,
                 tipHash = tipHash,
                 headHash = headHash,
+                currentMainState = currentMainState,
                 forkProposals = forkProposals
             )
         }
@@ -113,33 +118,30 @@ object DnsManager {
         branch: String,
         tipHash: String,
         headHash: String,
+        currentMainState: Map<RecordKey, ParsedRecord>,
         forkProposals: MutableMap<ForkProposalKey, ForkProposal>
     ) {
-        if (SharedValues.commitGraphAnalyzer.isAncestorOf(headHash, tipHash)) {
+        if (SharedValues.commitGraphAnalyzer.isAncestorOf(tipHash, headHash)) {
             logger.info("Fork $repository:$branch tip $tipHash found in main ancestry, skipping")
             return
         }
 
         val mergeBaseHash = SharedValues.commitGraphAnalyzer.mergeBase(tipHash, headHash)
         if (mergeBaseHash == null) {
-            // that should never happen, there are only two possibilities:
-            // 1. In the repo is a commit that has absolutely no connections to other commits
-            // 2. The CommitGraphAnalyzer is not up-to-date
             logger.warn("No merge-base for $repository:$branch ($tipHash), skipping")
             return
         }
 
         val tipCommit = resolveCommit(tipHash) ?: run {
-            // that should also never happen, but just in case
             logger.warn("Commit $tipHash not resolvable, skipping")
             return
         }
 
-        val mergeBaseState = resolveCommit(mergeBaseHash)
-            ?.let { loadCommitState(it) }
-            ?: emptyMap<RecordKey, ParsedRecord>().also {
-                // that should also never happen, but just in case
-                logger.warn("merge-base $mergeBaseHash not resolvable, taking empty state")
+        val mergeBaseTimestamp = resolveCommit(mergeBaseHash)
+            ?.let { Instant.fromEpochSeconds(it.commitTime.toLong()) }
+            ?: run {
+                logger.warn("merge-base $mergeBaseHash not resolvable, skipping")
+                return
             }
 
         val forkState = loadCommitState(tipCommit)
@@ -148,9 +150,10 @@ object DnsManager {
             repository = repository,
             branch = branch,
             tipCommit = tipHash,
-            tipTimestamp = Instant.fromEpochSeconds(tipCommit.commitTime.toLong()),
+            tipTimestamp = tipCommit.committerIdent.whenAsInstant.toKotlinInstant(),
             mergeBase = mergeBaseHash,
-            mergeBaseRecords = mergeBaseState,
+            mergeBaseTimestamp = mergeBaseTimestamp,
+            currentMainRecords = currentMainState,
             forkRecords = forkState,
             forkProposals = forkProposals
         )

@@ -114,20 +114,19 @@ object DnsIndexer {
         tipCommit: String,
         tipTimestamp: Instant,
         mergeBase: String,
-        mergeBaseRecords: Map<RecordKey, ParsedRecord>,
+        mergeBaseTimestamp: Instant,
+        currentMainRecords: Map<RecordKey, ParsedRecord>,
         forkRecords: Map<RecordKey, ParsedRecord>,
         forkProposals: MutableMap<ForkProposalKey, ForkProposal>
     ) {
-        val allKeys = mergeBaseRecords.keys + forkRecords.keys
-
-        for (key in allKeys) {
-            val inBase = mergeBaseRecords[key]
-            val inFork = forkRecords[key]
+        for (key in forkRecords.keys) {
+            val inMain = currentMainRecords[key]
+            val inFork = forkRecords[key]!!
 
             val proposalKey = ForkProposalKey(key, repository, branch)
 
             when {
-                inBase == null && inFork != null -> {
+                inMain == null -> {
                     upsertForkProposal(
                         proposalKey = proposalKey,
                         mergeBase = mergeBase,
@@ -141,27 +140,12 @@ object DnsIndexer {
                     )
                 }
 
-                inBase != null && inFork == null -> {
-                    upsertForkProposal(
-                        proposalKey = proposalKey,
-                        mergeBase = mergeBase,
-                        newState = ForkProposalState.DRAFT_DELETED,
-                        baseVersion = inBase.toVersion(mergeBase, "hackclub/dns", "main", tipTimestamp),
-                        newVersion = null,
-                        eventType = ForkProposalEventType.OPENED,
-                        commit = tipCommit,
-                        timestamp = tipTimestamp,
-                        forkProposals = forkProposals
-                    )
-                }
-
-                inBase != null && inFork != null &&
-                        (inBase.value != inFork.value || inBase.ttl != inFork.ttl) -> {
+                inMain.value != inFork.value || inMain.ttl != inFork.ttl -> {
                     upsertForkProposal(
                         proposalKey = proposalKey,
                         mergeBase = mergeBase,
                         newState = ForkProposalState.DRAFT_MODIFIED,
-                        baseVersion = inBase.toVersion(mergeBase, "hackclub/dns", "main", tipTimestamp),
+                        baseVersion = inMain.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp),
                         newVersion = inFork.toVersion(tipCommit, repository, branch, tipTimestamp),
                         eventType = ForkProposalEventType.OPENED,
                         commit = tipCommit,
@@ -170,6 +154,25 @@ object DnsIndexer {
                     )
                 }
             }
+        }
+
+        for (key in currentMainRecords.keys) {
+            if (key in forkRecords) continue
+
+            val inMain = currentMainRecords[key]!!
+            val proposalKey = ForkProposalKey(key, repository, branch)
+
+            upsertForkProposal(
+                proposalKey = proposalKey,
+                mergeBase = mergeBase,
+                newState = ForkProposalState.DRAFT_DELETED,
+                baseVersion = inMain.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp),
+                newVersion = null,
+                eventType = ForkProposalEventType.OPENED,
+                commit = tipCommit,
+                timestamp = tipTimestamp,
+                forkProposals = forkProposals
+            )
         }
     }
 
@@ -197,7 +200,7 @@ object DnsIndexer {
                 baseVersion = baseVersion,
                 timeline = mutableListOf(
                     ForkProposalEvent(
-                        type = ForkProposalEventType.OPENED,
+                        type = eventType,
                         oldVersion = null,
                         newVersion = newVersion,
                         commit = commit,
