@@ -104,7 +104,7 @@ object DnsManager {
 
         try {
             DatabaseManager.transaction {
-                HeadTable.batchUpsert(foundOriginHeads) {
+                HeadTable.batchUpsert(foundOriginHeads, shouldReturnGeneratedValues = false) {
                     this[HeadTable.repoId] = it.repoId
                     this[HeadTable.branch] = it.branch
                     this[HeadTable.commit] = it.commit
@@ -115,7 +115,7 @@ object DnsManager {
         }
         try {
             DatabaseManager.transaction {
-                HeadTable.batchUpsert(foundRemoteHeads) {
+                HeadTable.batchUpsert(foundRemoteHeads, shouldReturnGeneratedValues = false) {
                     this[HeadTable.repoId] = it.repoId
                     this[HeadTable.branch] = it.branch
                     this[HeadTable.commit] = it.commit

@@ -72,15 +72,15 @@ object Scheduler {
                 errorCount = (errorCount--).coerceAtLeast(0)
                 val toDelay = (5.minutes - duration).takeIf { it.isPositive() } ?: Duration.ZERO
                 if (toDelay == Duration.ZERO) {
-                    logger.info("Scheduled tasks took longer then 5 minutes (${duration.humanReadable()})")
-                    // we start the next iteration immediately, since it is not possible that the error has been increased if we get here
+                    logger.info("Scheduled tasks took longer then 5 minutes (${duration.humanReadable()}), still waiting for 1 minute")
+                    delay(1.minutes)
                     continue
                 } else {
                     logger.info("Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()}")
                 }
                 delay(toDelay)
                 errorCount = (errorCount--).coerceAtLeast(0)
-                // same as above
+                // we start the next iteration immediately, since it is not possible that the error count has been increased if we get here
                 continue
             } catch (e: Exception) {
                 logger.error("An error occurred while running the scheduled tasks", e)

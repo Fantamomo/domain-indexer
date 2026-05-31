@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import org.eclipse.jgit.internal.storage.file.LockFile
 import org.eclipse.jgit.transport.URIish
-import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.batchUpsert
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.slf4j.LoggerFactory
@@ -24,14 +23,14 @@ import kotlin.time.measureTime
 object SyncForksService {
     private val logger = LoggerFactory.getLogger(SyncForksService::class.java)
 
-    private val tenSeconds = 10.seconds
+    private val thirtySeconds = 30.seconds
 
     private const val SAVE_CHUNK_SIZE = 50
 
     suspend fun getForksIdInDb(): List<Fork> = DatabaseManager.transaction {
         ForkTable
             .selectAll()
-            .where { ForkTable.deleted eq false }
+//            .where { ForkTable.deleted eq false }
             .map {
                 Fork(
                     it[ForkTable.id],
@@ -243,7 +242,7 @@ object SyncForksService {
                     }
 
                     if (countFetch % 100 == 0) {
-                        logger.info("Running gc and minium waiting for 10 seconds to avoid rate limiting")
+                        logger.info("Running gc and minium waiting for ${thirtySeconds.humanReadable()} to avoid rate limiting")
 
                         val duration = measureTime {
                             try {
@@ -252,7 +251,7 @@ object SyncForksService {
                                 logger.error("Failed to run gc", e)
                             }
                         }
-                        val timeLeft = if (duration > tenSeconds) Duration.ZERO else tenSeconds - duration
+                        val timeLeft = if (duration > thirtySeconds) Duration.ZERO else thirtySeconds - duration
                         if (timeLeft == Duration.ZERO) {
                             logger.info("Garbage collecting took ${duration.humanReadable()}, no need to wait")
                         } else {
@@ -261,13 +260,13 @@ object SyncForksService {
 
                         delay(timeLeft)
 
-                        totalWaitTime += tenSeconds
+                        totalWaitTime += thirtySeconds
                     } else if (countFetch % 25 == 0) {
-                        logger.info("Delaying for 5 seconds to avoid rate limiting")
+                        logger.info("Delaying for 10 seconds to avoid rate limiting")
 
-                        delay(5.seconds)
+                        delay(10.seconds)
 
-                        totalWaitTime += 5.seconds
+                        totalWaitTime += 10.seconds
                     }
                 }
 

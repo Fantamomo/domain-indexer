@@ -8,7 +8,7 @@ group = "com.fantamomo.hc"
 version = "1.0.0-SNAPSHOT"
 
 application {
-    mainClass = "io.ktor.server.netty.EngineMain"
+    mainClass = "com.fantamomo.hc.dns.MainKt"
 }
 
 kotlin {
@@ -32,12 +32,12 @@ dependencies {
     implementation(libs.exposed.datetime)
     implementation(libs.exposed.json)
     implementation(libs.flaxoos.ktor.server.rateLimiting)
-    implementation(libs.h2database.h2)
-    implementation(libs.h2database.r2dbc)
+//    implementation(libs.h2database.h2)
+//    implementation(libs.h2database.r2dbc)
     implementation(libs.hayden.khealth)
     implementation(libs.logback.classic)
     implementation(libs.postgresql)
-    implementation(libs.postgresql.r2dbc)
+    runtimeOnly(libs.postgresql.r2dbc)
     implementation(libs.ucasoft.ktorSimpleCache)
     implementation(libs.ucasoft.ktorSimpleMemoryCache)
     implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0-0.6.x-compat")

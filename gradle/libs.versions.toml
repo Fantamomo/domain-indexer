@@ -14,7 +14,7 @@ h2database-h2 = { module = "com.h2database:h2", version.ref = "h2" }
 h2database-r2dbc = { module = "io.r2dbc:r2dbc-h2", version = "1.1.0.RELEASE" }
 hayden-khealth = { module = "dev.hayden:khealth", version = "3.0.2" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
-postgresql = { module = "org.postgresql:postgresql", version = "42.7.10" }
+postgresql = { module = "org.postgresql:postgresql", version = "42.7.11" }
 postgresql-r2dbc = { module = "org.postgresql:r2dbc-postgresql", version = "1.1.1.RELEASE" }
 ucasoft-ktorSimpleCache = { module = "com.ucasoft.ktor:ktor-simple-cache", version = "0.59.4" }
 ucasoft-ktorSimpleMemoryCache = { module = "com.ucasoft.ktor:ktor-simple-memory-cache", version = "0.59.4" }
