@@ -4,6 +4,8 @@ import com.fantamomo.hc.dns.util.GitHubHelperKtorPlugin
 import io.ktor.client.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.format.char
 import kotlinx.serialization.json.Json
 
 object SharedConstants {
@@ -25,4 +27,12 @@ object SharedConstants {
 
     // that is the internal github id of the hackclub/dns repo
     const val HACKCLUB_DNS_ID = 123017957L
+
+    val localDateTimeFormat = LocalDateTime.Format {
+        hour()
+        char(':')
+        minute()
+        char(':')
+        second()
+    }
 }

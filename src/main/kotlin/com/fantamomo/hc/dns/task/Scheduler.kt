@@ -1,6 +1,7 @@
 package com.fantamomo.hc.dns.task
 
 import com.fantamomo.hc.dns.App
+import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.db.ForkProposalTable
 import com.fantamomo.hc.dns.db.ForkProposalTimelineTable
@@ -19,11 +20,14 @@ import com.fantamomo.hc.dns.util.humanReadable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.v1.r2dbc.batchUpsert
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.slf4j.LoggerFactory
 import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.measureTime
@@ -76,7 +80,9 @@ object Scheduler {
                     delay(1.minutes)
                     continue
                 } else {
-                    logger.info("Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()}")
+                    val rerunAt = Clock.System.now() + toDelay
+                    val local = rerunAt.toLocalDateTime(TimeZone.currentSystemDefault())
+                    logger.info("Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()} (rerun at ${SharedConstants.localDateTimeFormat.format(local)})")
                 }
                 delay(toDelay)
                 errorCount = (errorCount--).coerceAtLeast(0)
