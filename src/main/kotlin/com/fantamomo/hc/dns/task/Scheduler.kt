@@ -1,5 +1,7 @@
-package com.fantamomo.hc.dns.task.init
+package com.fantamomo.hc.dns.task
 
+import com.fantamomo.hc.dns.App
+import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.db.ForkProposalTable
 import com.fantamomo.hc.dns.db.ForkProposalTimelineTable
 import com.fantamomo.hc.dns.db.RecordTable
@@ -7,26 +9,150 @@ import com.fantamomo.hc.dns.db.RecordTimelineTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.manager.DnsManager
 import com.fantamomo.hc.dns.model.dns.*
-import com.fantamomo.hc.dns.task.InitTask
+import com.fantamomo.hc.dns.service.GetForksService
+import com.fantamomo.hc.dns.service.SyncCommitService
+import com.fantamomo.hc.dns.service.SyncForksService
+import com.fantamomo.hc.dns.service.UserService
+import com.fantamomo.hc.dns.task.init.GetForksInitTask
 import com.fantamomo.hc.dns.util.SlackNotificationService
 import com.fantamomo.hc.dns.util.humanReadable
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import org.jetbrains.exposed.v1.r2dbc.batchUpsert
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
+import org.slf4j.LoggerFactory
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.measureTime
 import kotlin.time.measureTimedValue
 
-object DnsIndexTask : InitTask(
-    "dns-index",
-    SyncCommitsTask,
-    shortDescription = "Builds the DNS index",
-    longDescription = "Builds the DNS index by parsing DNS records and storing them in the DB"
-) {
+object Scheduler {
+    private val logger = LoggerFactory.getLogger(Scheduler::class.java)
+    private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
+        logger.error("A task in the scheduler encountered an exception", exception)
+    }
+    private val job = SupervisorJob(App.scope.coroutineContext.job)
+    private val scope = CoroutineScope(App.scope.coroutineContext + job + exceptionHandler)
 
-    override suspend fun run() {
+    private val running = AtomicBoolean(false)
 
+    suspend fun start() {
+        if (!running.compareAndSet(expectedValue = false, newValue = true)) {
+            throw IllegalStateException("Scheduler is already running")
+        }
+        // all the task that we do in the scheduler have already run, so it does not make sense to run directly again
+        logger.info("Scheduler started in 5 minutes")
+        delay(5.minutes)
+        // switching to the scheduler scope
+        try {
+            val job = scope.launch {
+                run()
+            }
+            job.join()
+        } catch (e: Throwable) {
+            logger.error("The scheduler has stopped unexpectedly. That should never happen, check logs for more details and then restart the application")
+            throw e
+        }
+    }
+
+    private suspend fun run() {
+        var errorCount = 0
+
+        // currently we some task, but all of them depend on the task bevor, so we can just run them all in a loop,
+        // instead of launching them all at once, the independent waiting for the task bevor
+        while (true) {
+            try {
+                logger.info("Running scheduled tasks")
+                val duration = measureTime {
+                    runTask()
+                }
+                errorCount = (errorCount--).coerceAtLeast(0)
+                val toDelay = (5.minutes - duration).takeIf { it.isPositive() } ?: Duration.ZERO
+                if (toDelay == Duration.ZERO) {
+                    logger.info("Scheduled tasks took longer then 5 minutes (${duration.humanReadable()})")
+                    // we start the next iteration immediately, since it is not possible that the error has been increased if we get here
+                    continue
+                } else {
+                    logger.info("Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()}")
+                }
+                delay(toDelay)
+                errorCount = (errorCount--).coerceAtLeast(0)
+                // same as above
+                continue
+            } catch (e: Exception) {
+                logger.error("An error occurred while running the scheduled tasks", e)
+                errorCount += 3
+            }
+            if (errorCount > 20) {
+                logger.error("Too many errors occurred. Stopping the scheduler")
+                return
+            }
+            if (errorCount > 15) {
+                logger.error("Too many errors occurred. Check the logs for more details")
+                logger.error("Waiting for 10 minutes before trying again")
+                delay(10.minutes)
+            }
+        }
+    }
+
+    private suspend fun runTask() {
+        val originUpdated = try {
+            val fetch = SharedValues.git.fetch()
+            fetch.trackingRefUpdates.isNotEmpty()
+        } catch (e: Exception) {
+            logger.error("Failed to fetch updates for repo", e)
+            // we cannot be sure if the origin has been updated or not, so we assume that it has not been updated, but we log the error
+            false
+        }
+        val forks = GetForksService.getForks()
+        val forksUpdated = when (forks.status) {
+            GetForksService.Status.FAILED -> {
+                if (!originUpdated) throw IllegalStateException("Failed to fetch forks, check logs for more details")
+                // if origin has been updated, we cannot stop this iteration, because we need to index the new commits in main
+                logger.error("Failed to fetch forks, check logs for more details")
+                false
+            }
+
+            GetForksService.Status.SUCCESS -> true
+            GetForksService.Status.NOT_MODIFIED -> {
+                // perfect, if we get here, none of the forks have been updated since the last fetch
+                false
+            }
+        }
+        if (!originUpdated && !forksUpdated) {
+            logger.info("No changes detected, skipping this iteration")
+            return
+        }
+        if (forksUpdated) {
+            // we only need to update the forks because the fetch command already updated the origin
+            try {
+                SyncForksService.syncForks()
+            } catch (e: Exception) {
+                logger.error("Unexpected exception while syncing forks", e)
+            }
+        }
+        try {
+            UserService.updateUsers(GetForksInitTask.forks.map { it.user })
+        } catch (e: Exception) {
+            // bad if it happens, but we can still continue
+            logger.error("Failed to update users while fetching forks", e)
+        }
+        try {
+            SyncCommitService.sync()
+        } catch (e: Exception) {
+            logger.error("Unexpected exception while syncing commits", e)
+            // sadly if the sync fails, we need to stop the iteration, because the commits need to be in the db for later actions
+            throw e
+        }
+        runIndex()
+    }
+
+    // yeah, I simply copied it from DnsIndexTask, DRY comes later
+    // todo: make it dry
+    private suspend fun runIndex() {
         val existingRecords = DatabaseManager.transaction {
             RecordTable.selectAll().map {
                 RecordKey(
@@ -62,8 +188,8 @@ object DnsIndexTask : InitTask(
 
         val existingForkKeys = existingForks.keys.toSet()
 
-        // not the best way to check that, but yeah, it works
-        val firstRun = DatabaseManager.transaction { RecordTable.selectAll().empty() }
+//        // not the best way to check that, but yeah, it works
+//        val firstRun = DatabaseManager.transaction { RecordTable.selectAll().empty() }
 
         val (index, duration) = measureTimedValue { DnsManager.index() }
 
@@ -104,14 +230,15 @@ object DnsIndexTask : InitTask(
 
         val hasAnyChange =
             newRecords.isNotEmpty() ||
+                    removedRecords.isNotEmpty() ||
                     changedRecords.isNotEmpty() ||
                     newForkProposals.isNotEmpty() ||
                     changedForkProposals.isNotEmpty() ||
                     closedForkProposals.isNotEmpty()
 
-        if (hasAnyChange && firstRun) {
+        /*if (hasAnyChange && firstRun) {
             logger.warn("This is the first run, skipping Slack notification")
-        } else if (hasAnyChange) {
+        } else */if (hasAnyChange) {
             SlackNotificationService.sendDnsChangeNotification(
                 newRecords = newRecords,
                 changedRecords = changedRecords,

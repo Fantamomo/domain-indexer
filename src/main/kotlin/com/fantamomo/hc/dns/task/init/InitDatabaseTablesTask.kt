@@ -22,6 +22,7 @@ object InitDatabaseTablesTask : InitTask(
                     ForkTable,
                     CommitTable,
                     CommitParentsTable,
+                    HeadTable,
                     RecordTable,
                     RecordTimelineTable,
                     ForkProposalTable,

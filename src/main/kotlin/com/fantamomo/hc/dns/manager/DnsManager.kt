@@ -2,7 +2,9 @@ package com.fantamomo.hc.dns.manager
 
 import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.ForkTable
+import com.fantamomo.hc.dns.db.HeadTable
 import com.fantamomo.hc.dns.db.UserTable
+import com.fantamomo.hc.dns.model.Head
 import com.fantamomo.hc.dns.model.dns.*
 import com.fantamomo.hc.dns.util.DnsIndexer
 import com.fantamomo.hc.dns.util.DnsParser
@@ -12,7 +14,9 @@ import kotlinx.coroutines.flow.toList
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.treewalk.TreeWalk
+import org.jetbrains.exposed.v1.r2dbc.batchUpsert
 import org.jetbrains.exposed.v1.r2dbc.select
+import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.slf4j.LoggerFactory
 import kotlin.time.Instant
 import kotlin.time.toKotlinInstant
@@ -39,20 +43,38 @@ object DnsManager {
         indexMainBranch(headHash, mainTimelines)
         logger.info("Main-branch indexed: ${mainTimelines.size} records")
 
+        val heads = DatabaseManager.transaction {
+            HeadTable.selectAll()
+                .map { Head(it[HeadTable.repoId], it[HeadTable.branch], it[HeadTable.commit]) }
+                .toList()
+        }
+        val headsById = heads.groupBy { it.repoId }
+
         val forkProposals = mutableMapOf<ForkProposalKey, ForkProposal>()
 
         val originRefs = git.repository.refDatabase
             .getRefsByPrefix("refs/heads/")
             .filter { it.name != "refs/heads/main" }
 
+        val foundOriginHeads = mutableSetOf<Head>()
+
         for (ref in originRefs) {
-            val tipHash = ref.objectId.name
             val branch = ref.name.removePrefix("refs/heads/")
-            processForkBranch("hackclub/dns", branch, tipHash, headHash, forkProposals)
+            val head = headsById[null]?.find { it.branch == branch }
+            val tipHash = ref.objectId.name
+            if (head == null || tipHash != head.commit) {
+                processForkBranch("hackclub/dns", branch, tipHash, headHash, forkProposals)
+                foundOriginHeads += Head(null, branch, tipHash)
+            } else {
+                foundOriginHeads += head
+                logger.info("Skipping hackclub/dns:$branch, already indexed")
+            }
         }
 
         val remoteRefs = git.repository.refDatabase
             .getRefsByPrefix("refs/remotes/fork/")
+
+        val foundRemoteHeads = mutableSetOf<Head>()
 
         for (ref in remoteRefs) {
             val tipHash = ref.objectId.name
@@ -68,8 +90,41 @@ object DnsManager {
                 logger.warn("Unknown fork ID: $forkId, skipping")
                 continue
             }
+            val head = headsById[forkId]?.find { it.branch == branch }
 
-            processForkBranch(repoName, branch, tipHash, headHash, forkProposals)
+            if (head == null || tipHash != head.commit) {
+                processForkBranch(repoName, branch, tipHash, headHash, forkProposals)
+                foundRemoteHeads += Head(forkId, branch, tipHash)
+            } else {
+                logger.info("Skipping $repoName:$branch, already indexed")
+                foundRemoteHeads += head
+            }
+        }
+
+        try {
+            DatabaseManager.transaction {
+                HeadTable.batchUpsert(foundOriginHeads) {
+                    this[HeadTable.repoId] = it.repoId
+                    this[HeadTable.branch] = it.branch
+                    this[HeadTable.commit] = it.commit
+                }
+            }
+        } catch (e: Exception) {
+            // due to unknown reasons, the batchUpsert always failed because it violates the repo NOT NULL constraint,
+            // well..., we do make it nullable, but in the table it is still NOT NULL, so idk
+            // todo: find out why this happens
+            logger.error("Failed to insert origin heads", e)
+        }
+        try {
+            DatabaseManager.transaction {
+                HeadTable.batchUpsert(foundRemoteHeads) {
+                    this[HeadTable.repoId] = it.repoId
+                    this[HeadTable.branch] = it.branch
+                    this[HeadTable.commit] = it.commit
+                }
+            }
+        } catch (e: Exception) {
+            logger.error("Failed to insert remote heads", e)
         }
 
         logger.info("Found ${forkProposals.size} fork proposals")
