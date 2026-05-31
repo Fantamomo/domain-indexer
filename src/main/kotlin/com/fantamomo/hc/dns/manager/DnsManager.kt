@@ -1,5 +1,6 @@
 package com.fantamomo.hc.dns.manager
 
+import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.ForkTable
 import com.fantamomo.hc.dns.db.HeadTable
@@ -60,14 +61,14 @@ object DnsManager {
 
         for (ref in originRefs) {
             val branch = ref.name.removePrefix("refs/heads/")
-            val head = headsById[null]?.find { it.branch == branch }
+            val head = headsById[SharedConstants.HACKCLUB_DNS_ID]?.find { it.branch == branch }
             val tipHash = ref.objectId.name
             if (head == null || tipHash != head.commit) {
                 processForkBranch("hackclub/dns", branch, tipHash, headHash, forkProposals)
-                foundOriginHeads += Head(null, branch, tipHash)
+                foundOriginHeads += Head(SharedConstants.HACKCLUB_DNS_ID, branch, tipHash)
             } else {
                 foundOriginHeads += head
-                logger.info("Skipping hackclub/dns:$branch, already indexed")
+                logger.debug("Skipping hackclub/dns:$branch, already indexed")
             }
         }
 
@@ -96,7 +97,7 @@ object DnsManager {
                 processForkBranch(repoName, branch, tipHash, headHash, forkProposals)
                 foundRemoteHeads += Head(forkId, branch, tipHash)
             } else {
-                logger.info("Skipping $repoName:$branch, already indexed")
+                logger.debug("Skipping $repoName:$branch, already indexed")
                 foundRemoteHeads += head
             }
         }
@@ -110,9 +111,6 @@ object DnsManager {
                 }
             }
         } catch (e: Exception) {
-            // due to unknown reasons, the batchUpsert always failed because it violates the repo NOT NULL constraint,
-            // well..., we do make it nullable, but in the table it is still NOT NULL, so idk
-            // todo: find out why this happens
             logger.error("Failed to insert origin heads", e)
         }
         try {

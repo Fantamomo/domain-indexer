@@ -91,6 +91,7 @@ object SyncForksService {
 
         val dbForks = getForksIdInDb()
         val dbForksIds = dbForks.associateBy { it.id }
+        logger.info("Found ${dbForks.size} forks in db")
 
         val newForks = forks.filter { it.fork.id !in dbForksIds }
 
@@ -104,9 +105,24 @@ object SyncForksService {
                             )
         }
 
+        if (updatedForks.isEmpty() && newForks.isEmpty()) {
+            logger.info("All forks are up to date, skipping sync")
+            return@coroutineScope
+        }
+
+        val fetchBecausePush = updatedForks.count { it.fork.pushedAt != dbForksIds[it.fork.id]?.pushedAt }
+        val fetchBecauseUpdate = updatedForks.count { it.fork.lastUpdatedAt != dbForksIds[it.fork.id]?.lastUpdatedAt }
+        val fetchBecauseBoth = updatedForks.count { it.fork.pushedAt != dbForksIds[it.fork.id]?.pushedAt && it.fork.lastUpdatedAt != dbForksIds[it.fork.id]?.lastUpdatedAt }
+        val fetchBecauseNew = newForks.size
+
+
+        logger.info("Fetching $fetchBecausePush forks because of pushedAt, $fetchBecauseUpdate because of lastUpdatedAt, $fetchBecauseBoth because of both, $fetchBecauseNew because they are new")
+
         val deletedForks = dbForks.filter { fork ->
             fork.id !in forksIds
         }
+
+        logger.info("Found ${deletedForks.size} forks to mark as deleted")
 
         if (dbForks.isEmpty()) {
             logger.info("No forks in db, running full sync")
@@ -115,33 +131,36 @@ object SyncForksService {
                 "Running incremental sync of ${newForks.size + updatedForks.size} forks"
             )
         }
+        if (newForks.isNotEmpty()) {
+            var remoteAddedSuccessfully = 0
 
-        var remoteAddedSuccessfully = 0
+            logger.info("Adding ${newForks.size} remotes")
 
-        logger.info("Adding ${newForks.size} remotes")
+            val addDuration = measureTime {
+                for (fork in newForks) {
+                    try {
+                        git.remoteAdd {
+                            setName("fork/${fork.fork.userId}/${fork.fork.id}")
+                            setUri(URIish("https://github.com/${fork.combinedName}.git"))
+                        }
 
-        val addDuration = measureTime {
-            for (fork in newForks) {
-                try {
-                    git.remoteAdd {
-                        setName("fork/${fork.fork.userId}/${fork.fork.id}")
-                        setUri(URIish("https://github.com/${fork.combinedName}.git"))
+                        remoteAddedSuccessfully++
+                    } catch (e: Exception) {
+                        logger.error(
+                            "Failed to add remote for fork ${fork.combinedName}",
+                            e
+                        )
                     }
-
-                    remoteAddedSuccessfully++
-                } catch (e: Exception) {
-                    logger.error(
-                        "Failed to add remote for fork ${fork.combinedName}",
-                        e
-                    )
                 }
             }
-        }
 
-        logger.info(
-            "Added $remoteAddedSuccessfully/${newForks.size} remotes " +
-                    "in ${addDuration.humanReadable()}"
-        )
+            logger.info(
+                "Added $remoteAddedSuccessfully/${newForks.size} remotes " +
+                        "in ${addDuration.humanReadable()}"
+            )
+        } else {
+            logger.info("No new forks found, skipping remote adding")
+        }
 
         val forksToFetch = newForks + updatedForks
         val totalToFetch = forksToFetch.size

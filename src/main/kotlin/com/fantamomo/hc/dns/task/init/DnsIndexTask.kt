@@ -105,6 +105,7 @@ object DnsIndexTask : InitTask(
         val hasAnyChange =
             newRecords.isNotEmpty() ||
                     changedRecords.isNotEmpty() ||
+                    removedRecords.isNotEmpty() ||
                     newForkProposals.isNotEmpty() ||
                     changedForkProposals.isNotEmpty() ||
                     closedForkProposals.isNotEmpty()
@@ -112,6 +113,7 @@ object DnsIndexTask : InitTask(
         if (hasAnyChange && firstRun) {
             logger.warn("This is the first run, skipping Slack notification")
         } else if (hasAnyChange) {
+            logger.info("Changes detected, sending Slack notification")
             SlackNotificationService.sendDnsChangeNotification(
                 newRecords = newRecords,
                 changedRecords = changedRecords,
@@ -120,6 +122,8 @@ object DnsIndexTask : InitTask(
                 changedForkProposals = changedForkProposals,
                 closedForkProposals = closedForkProposals,
             )
+        } else {
+            logger.info("No changes detected, skipping Slack notification")
         }
 
         if (index.mainTimelines.isNotEmpty()) {

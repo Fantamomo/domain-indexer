@@ -22,4 +22,7 @@ object SharedConstants {
             json(json)
         }
     }
+
+    // that is the internal github id of the hackclub/dns repo
+    const val HACKCLUB_DNS_ID = 123017957L
 }

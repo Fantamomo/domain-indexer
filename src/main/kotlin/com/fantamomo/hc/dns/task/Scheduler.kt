@@ -141,7 +141,12 @@ object Scheduler {
             logger.error("Failed to update users while fetching forks", e)
         }
         try {
-            SyncCommitService.sync()
+            val newCommits = SyncCommitService.sync()
+            if (!newCommits) {
+                // no new commits -> no need to reindex
+                logger.info("No new commits, skipping this iteration")
+                return
+            }
         } catch (e: Exception) {
             logger.error("Unexpected exception while syncing commits", e)
             // sadly if the sync fails, we need to stop the iteration, because the commits need to be in the db for later actions
@@ -239,6 +244,7 @@ object Scheduler {
         /*if (hasAnyChange && firstRun) {
             logger.warn("This is the first run, skipping Slack notification")
         } else */if (hasAnyChange) {
+            logger.info("Changes detected, sending Slack notification")
             SlackNotificationService.sendDnsChangeNotification(
                 newRecords = newRecords,
                 changedRecords = changedRecords,
@@ -247,6 +253,8 @@ object Scheduler {
                 changedForkProposals = changedForkProposals,
                 closedForkProposals = closedForkProposals,
             )
+        } else {
+            logger.info("No changes detected, skipping Slack notification")
         }
 
         if (index.mainTimelines.isNotEmpty()) {

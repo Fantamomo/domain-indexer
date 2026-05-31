@@ -25,7 +25,7 @@ object SyncCommitService {
             .toList()
     }
 
-    suspend fun sync() {
+    suspend fun sync(): Boolean {
         logger.info("Syncing commits...")
         val commitIds = getAllCommitsIds()
         logger.info("Found ${commitIds.size} commits in db")
@@ -37,7 +37,7 @@ object SyncCommitService {
         val newCommitsRev = commits.filterNot { it.name in commitIds }
         if (newCommitsRev.isEmpty()) {
             logger.info("No new commits found, skipping sync")
-            return
+            return false
         }
         logger.info("Found ${newCommitsRev.size} new commits")
         val newCommits = newCommitsRev.map { it.toCommit(users) }
@@ -76,6 +76,7 @@ object SyncCommitService {
             logger.error("Failed to insert commit parents", e)
             throw Exception("Failed to insert commits", e)
         }
+        return true
     }
 
     private fun <K, V> Map<K, List<V>>.flattenToPairs(): List<Pair<K, V>> {
