@@ -3,15 +3,13 @@ package com.fantamomo.hc.dns.util
 import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.model.dns.ForkProposal
+import com.fantamomo.hc.dns.model.dns.RecordKey
 import com.fantamomo.hc.dns.model.dns.RecordTimeline
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 
 object SlackNotificationService {
 
@@ -30,12 +28,13 @@ object SlackNotificationService {
     ) {
         val webhookUrl = Config.SLACK_WEB_HOOK_URL
         if (webhookUrl.isBlank()) {
-            logger.warn("Slack webhook URL is not configured — skipping notification")
+            logger.warn("Slack webhook URL is not configured, skipping notification")
             return
         }
 
         val hasRecordChanges = newRecords.isNotEmpty() || changedRecords.isNotEmpty() || removedRecords.isNotEmpty()
-        val hasForkChanges = newForkProposals.isNotEmpty() || changedForkProposals.isNotEmpty() || closedForkProposals.isNotEmpty()
+        val hasForkChanges =
+            newForkProposals.isNotEmpty() || changedForkProposals.isNotEmpty() || closedForkProposals.isNotEmpty()
         if (!hasRecordChanges && !hasForkChanges) return
 
         val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
@@ -64,7 +63,7 @@ object SlackNotificationService {
                             fqdn = rt.key.fqdn,
                             type = rt.key.type.name,
                             newValue = rt.current?.value,
-                            meta = rt.current?.ttl?.let { "ttl: $it" }
+                            meta = rt.current?.ttl?.let { "TTL: $it" }
                         )
                     }
                 }
@@ -76,7 +75,8 @@ object SlackNotificationService {
                             fqdn = rt.key.fqdn,
                             type = rt.key.type.name,
                             oldValue = last?.oldVersion?.value,
-                            newValue = (last?.newVersion ?: rt.current)?.value
+                            newValue = (last?.newVersion ?: rt.current)?.value,
+                            meta = rt.current?.ttl?.let { "TTL: $it" }
                         )
                     }
                 }
@@ -102,7 +102,7 @@ object SlackNotificationService {
                             fqdn = p.key.fqdn,
                             type = p.key.type.name,
                             repo = "${p.repository}:${p.branch}",
-                            meta = p.baseVersion?.value?.let { "base: ${it.cap(80)}" },
+                            meta = p.current?.ttl?.let { "TTL: $it" },
                             newValue = p.current?.value
                         )
                     }
@@ -116,7 +116,8 @@ object SlackNotificationService {
                             type = p.key.type.name,
                             repo = "${p.repository}:${p.branch}",
                             oldValue = last?.oldVersion?.value,
-                            newValue = (last?.newVersion ?: p.current)?.value
+                            newValue = (last?.newVersion ?: p.current)?.value,
+                            meta = p.current?.ttl?.let { "TTL: $it" }
                         )
                     }
                 }
@@ -133,9 +134,7 @@ object SlackNotificationService {
                 }
             }
 
-            val timestamp = ZonedDateTime.now(ZoneId.of("UTC"))
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'"))
-            context("Fantamomo DNS  *  $timestamp")
+            context(":star: star the <https://github.com/fantamomo/domain-indexer|repo>")
         }
 
         post(webhookUrl, blocks)
@@ -202,9 +201,11 @@ object SlackNotificationService {
             if (overflow()) return
             blocks += jsonObjectOf(
                 "type" to "context",
-                "elements" to JsonArray(listOf(
-                    jsonObjectOf("type" to "mrkdwn", "text" to text.cap(300))
-                ))
+                "elements" to JsonArray(
+                    listOf(
+                        jsonObjectOf("type" to "mrkdwn", "text" to text.cap(300))
+                    )
+                )
             )
         }
 
@@ -213,18 +214,22 @@ object SlackNotificationService {
 
             blocks += jsonObjectOf(
                 "type" to "rich_text",
-                "elements" to JsonArray(listOf(
-                    jsonObjectOf(
-                        "type" to "rich_text_section",
-                        "elements" to JsonArray(listOf(
-                            jsonObjectOf(
-                                "type" to "text",
-                                "text" to "$title (${items.size})",
-                                "style" to jsonObjectOf("bold" to true)
+                "elements" to JsonArray(
+                    listOf(
+                        jsonObjectOf(
+                            "type" to "rich_text_section",
+                            "elements" to JsonArray(
+                                listOf(
+                                    jsonObjectOf(
+                                        "type" to "text",
+                                        "text" to "$title (${items.size})",
+                                        "style" to jsonObjectOf("bold" to true)
+                                    )
+                                )
                             )
-                        ))
+                        )
                     )
-                ))
+                )
             )
 
             items.chunked(CHUNK_SIZE).forEachIndexed { chunkIndex, chunk ->
@@ -233,7 +238,11 @@ object SlackNotificationService {
                 val richElements = mutableListOf<JsonObject>()
 
                 if (chunkIndex > 0) {
-                    richElements += jsonObjectOf("type" to "text", "text" to "Part ${chunkIndex + 1}\n", "style" to jsonObjectOf("italic" to true))
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to "Part ${chunkIndex + 1}\n",
+                        "style" to jsonObjectOf("italic" to true)
+                    )
                 }
 
                 chunk.forEachIndexed { index, item ->
@@ -241,38 +250,88 @@ object SlackNotificationService {
 
                     richElements += jsonObjectOf("type" to "text", "text" to (if (index > 0) "\n\n" else "\n"))
 
-                    richElements += jsonObjectOf("type" to "text", "text" to "Name: ", "style" to jsonObjectOf("bold" to true))
-                    richElements += jsonObjectOf("type" to "text", "text" to e.fqdn.sanitize(), "style" to jsonObjectOf("code" to true))
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to "Name: ",
+                        "style" to jsonObjectOf("bold" to true)
+                    )
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to e.fqdn.sanitize(),
+                        "style" to jsonObjectOf("code" to true)
+                    )
                     richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                    richElements += jsonObjectOf("type" to "text", "text" to "Type: ", "style" to jsonObjectOf("bold" to true))
-                    richElements += jsonObjectOf("type" to "text", "text" to e.type, "style" to jsonObjectOf("code" to true))
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to "Type: ",
+                        "style" to jsonObjectOf("bold" to true)
+                    )
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to e.type,
+                        "style" to jsonObjectOf("code" to true)
+                    )
 
                     if (e.repo != null) {
                         richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                        richElements += jsonObjectOf("type" to "text", "text" to "Repo: ", "style" to jsonObjectOf("bold" to true))
-                        richElements += jsonObjectOf("type" to "text", "text" to e.repo.sanitize(), "style" to jsonObjectOf("code" to true))
+                        richElements += jsonObjectOf(
+                            "type" to "text",
+                            "text" to "Repo: ",
+                            "style" to jsonObjectOf("bold" to true)
+                        )
+                        richElements += jsonObjectOf(
+                            "type" to "text",
+                            "text" to e.repo.sanitize(),
+                            "style" to jsonObjectOf("code" to true)
+                        )
                     }
 
 
                     richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                    richElements += jsonObjectOf("type" to "text", "text" to "Value: ", "style" to jsonObjectOf("bold" to true))
+                    richElements += jsonObjectOf(
+                        "type" to "text",
+                        "text" to "Value: ",
+                        "style" to jsonObjectOf("bold" to true)
+                    )
                     when {
                         e.oldValue != null && e.newValue != null -> {
-                            richElements += jsonObjectOf("type" to "text", "text" to e.oldValue.sanitize().cap(80), "style" to jsonObjectOf("code" to true, "strike" to true))
+                            richElements += jsonObjectOf(
+                                "type" to "text",
+                                "text" to e.oldValue.sanitize().cap(80),
+                                "style" to jsonObjectOf("code" to true, "strike" to true)
+                            )
                             richElements += jsonObjectOf("type" to "text", "text" to "  ->  ")
-                            richElements += jsonObjectOf("type" to "text", "text" to e.newValue.sanitize().cap(80), "style" to jsonObjectOf("code" to true))
+                            richElements += jsonObjectOf(
+                                "type" to "text",
+                                "text" to e.newValue.sanitize().cap(80),
+                                "style" to jsonObjectOf("code" to true)
+                            )
                         }
+
                         e.oldValue != null -> {
-                            richElements += jsonObjectOf("type" to "text", "text" to e.oldValue.sanitize().cap(100), "style" to jsonObjectOf("code" to true, "strike" to true))
+                            richElements += jsonObjectOf(
+                                "type" to "text",
+                                "text" to e.oldValue.sanitize().cap(100),
+                                "style" to jsonObjectOf("code" to true, "strike" to true)
+                            )
                         }
+
                         e.newValue != null -> {
-                            richElements += jsonObjectOf("type" to "text", "text" to e.newValue.sanitize().cap(120), "style" to jsonObjectOf("code" to true))
+                            richElements += jsonObjectOf(
+                                "type" to "text",
+                                "text" to e.newValue.sanitize().cap(120),
+                                "style" to jsonObjectOf("code" to true)
+                            )
                         }
                     }
 
                     if (e.meta != null) {
                         richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                        richElements += jsonObjectOf("type" to "text", "text" to e.meta.sanitize(), "style" to jsonObjectOf("italic" to true))
+                        richElements += jsonObjectOf(
+                            "type" to "text",
+                            "text" to e.meta.sanitize(),
+                            "style" to jsonObjectOf("italic" to true)
+                        )
                     }
                 }
 
@@ -280,21 +339,25 @@ object SlackNotificationService {
 
                 blocks += jsonObjectOf(
                     "type" to "rich_text",
-                    "elements" to JsonArray(listOf(
-                        jsonObjectOf(
-                            "type" to "rich_text_section",
-                            "elements" to JsonArray(richElements)
+                    "elements" to JsonArray(
+                        listOf(
+                            jsonObjectOf(
+                                "type" to "rich_text_section",
+                                "elements" to JsonArray(richElements)
+                            )
                         )
-                    ))
+                    )
                 )
             }
 
             if (items.size > CHUNK_SIZE * ((blocks.size / CHUNK_SIZE).coerceAtLeast(1))) {
                 blocks += jsonObjectOf(
                     "type" to "context",
-                    "elements" to JsonArray(listOf(
-                        jsonObjectOf("type" to "mrkdwn", "text" to "_Some entries omitted due to block limit_")
-                    ))
+                    "elements" to JsonArray(
+                        listOf(
+                            jsonObjectOf("type" to "mrkdwn", "text" to "_Some entries omitted due to block limit_")
+                        )
+                    )
                 )
             }
 
@@ -310,7 +373,9 @@ object SlackNotificationService {
         private var text: String? = null
         private val fieldList = mutableListOf<JsonPrimitive>()
 
-        fun text(value: String) { text = value }
+        fun text(value: String) {
+            text = value
+        }
 
         fun fields(init: FieldsBuilder.() -> Unit) {
             fieldList += FieldsBuilder().apply(init).build()
@@ -330,14 +395,17 @@ object SlackNotificationService {
 
     private class FieldsBuilder {
         private val fields = mutableListOf<JsonPrimitive>()
-        fun field(text: String) { fields += JsonPrimitive(text.cap(2000)) }
+        fun field(text: String) {
+            fields += JsonPrimitive(text.cap(2000))
+        }
+
         fun build() = fields
     }
 
     private val JsonObject.isDivider get() = get("type")?.jsonPrimitive?.content == "divider"
 
-    private val com.fantamomo.hc.dns.model.dns.RecordKey.fqdn get() =
-        if (name == "@") host else "$name.$host"
+    private val RecordKey.fqdn
+        get() = if (name == "" || name == "@") host else "$name.$host"
 
     private val Int.plural get() = if (this != 1) "s" else ""
 
