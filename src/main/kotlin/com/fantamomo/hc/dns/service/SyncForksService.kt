@@ -177,9 +177,9 @@ object SyncForksService {
         val lock = LockFile(logFile)
 
         // we acquire the lock on the gc.log file so that the gc thinks it is already running
-        // and doesn't try to run it again.
+        // and doesn't try to run again.
         // we need to do this because after every fetch the system runs gc, that is normally not a problem,
-        // but it is, so we need to prevent it from running.
+        // but sometimes it is, so we need to prevent it from running.
         if (!lock.lock()) {
             logger.error("Failed to acquire lock on gc.log")
             throw IllegalStateException("Failed to acquire lock on gc.log")

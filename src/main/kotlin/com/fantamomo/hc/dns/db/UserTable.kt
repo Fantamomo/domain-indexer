@@ -7,6 +7,7 @@ object UserTable : Table("users") {
     val username = varchar("username", 255)
     val email = varchar("email", 255).nullable()
     val type = varchar("type", 255)
+    val slackId = varchar("slackId", 20).nullable()
     val deleted = bool("delete").default(false)
 
     override val primaryKey = PrimaryKey(id)

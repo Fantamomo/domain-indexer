@@ -16,7 +16,8 @@ object UserService {
                     id = it[UserTable.id],
                     username = it[UserTable.username],
                     email = it[UserTable.email],
-                    type = it[UserTable.type]
+                    type = it[UserTable.type],
+                    slackId = it[UserTable.slackId],
                 )
             }.toList()
     }
@@ -32,16 +33,19 @@ object UserService {
 
         DatabaseManager.transaction {
             UserTable.batchUpsert(toInsert + toUpdate, shouldReturnGeneratedValues = false) {
+                val dbUser = dbUsersMap[it.id]
                 this[UserTable.id] = it.id
                 this[UserTable.username] = it.username
-                this[UserTable.email] = it.email
+                this[UserTable.email] = it.email ?: dbUser?.email
                 this[UserTable.type] = it.type
+                this[UserTable.slackId] = it.slackId ?: dbUser?.slackId
             }
             UserTable.batchUpsert(toDelete, shouldReturnGeneratedValues = false) {
                 this[UserTable.id] = it.id
                 this[UserTable.username] = it.username
                 this[UserTable.email] = it.email
                 this[UserTable.type] = it.type
+                this[UserTable.slackId] = it.slackId
                 this[UserTable.deleted] = true
             }
         }

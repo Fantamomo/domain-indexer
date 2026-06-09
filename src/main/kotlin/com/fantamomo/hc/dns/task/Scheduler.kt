@@ -66,7 +66,7 @@ object Scheduler {
         var errorCount = 0
 
         // currently we some task, but all of them depend on the task bevor, so we can just run them all in a loop,
-        // instead of launching them all at once, the independent waiting for the task bevor
+        // instead of launching them all at once, then independent waiting for the task bevor
         while (true) {
             try {
                 logger.info("Running scheduled tasks")

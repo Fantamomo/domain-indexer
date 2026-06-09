@@ -217,25 +217,27 @@ object GetForksService {
                 val userType = owner["type"]!!.jsonPrimitive.content
 
                 forks.add(
-                    FetchedFork(Fork(
-                        id = obj["id"]!!.jsonPrimitive.long,
-                        userId = userId,
-                        name = obj["name"]!!.jsonPrimitive.content,
-                        createdAt = Instant.parse(
-                            obj["created_at"]!!.jsonPrimitive.content
+                    FetchedFork(
+                        Fork(
+                            id = obj["id"]!!.jsonPrimitive.long,
+                            userId = userId,
+                            name = obj["name"]!!.jsonPrimitive.content,
+                            createdAt = Instant.parse(
+                                obj["created_at"]!!.jsonPrimitive.content
+                            ),
+                            lastUpdatedAt = Instant.parse(
+                                obj["updated_at"]!!.jsonPrimitive.content
+                            ),
+                            pushedAt = Instant.parse(
+                                obj["pushed_at"]!!.jsonPrimitive.content
+                            )
                         ),
-                        lastUpdatedAt = Instant.parse(
-                            obj["updated_at"]!!.jsonPrimitive.content
-                        ),
-                        pushedAt = Instant.parse(
-                            obj["pushed_at"]!!.jsonPrimitive.content
-                        )
-                    ),
                         User(
                             id = userId,
                             username = userName,
                             email = null,
-                            type = userType
+                            type = userType,
+                            slackId = null
                         )
                     )
                 )

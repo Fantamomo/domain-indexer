@@ -12,3 +12,5 @@ It does that all 5 minutes (of course optimized so that there are no rate limits
 If it finds a new domain or updated one, it sends a slack message, to the [#dns-tracker](https://hackclub.enterprise.slack.com/archives/C0B6EV1FYKU) channel.
 
 There are still some bugs, because of the complexity of git and vsc (currently deleted records are broken).
+
+(Btw, the first run takes around 20–25 minutes)
