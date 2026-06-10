@@ -202,7 +202,7 @@ object YamlParser {
 
                 if (nextTrim.startsWith("- ")) {
                     val (subList, newI) = parseList(lines, i, nextIndent)
-                    lastMapKey?.let { map[it] = subList }
+                    lastMapKey.let { map[it] = subList }
                     i = newI
                     continue
                 }
@@ -214,7 +214,7 @@ object YamlParser {
                 }
 
                 // broken continuation (fo=1 style)
-                lastMapKey?.let {
+                lastMapKey.let {
                     val prev = map[it]
                     map[it] = StringYamlElement(
                         ((prev as? StringYamlElement)?.content ?: "") +
