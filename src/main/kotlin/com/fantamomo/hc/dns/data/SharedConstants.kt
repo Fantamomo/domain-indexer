@@ -18,10 +18,14 @@ object SharedConstants {
         ignoreUnknownKeys = true
     }
 
-    val client = HttpClient {
-        install(GitHubHelperKtorPlugin)
-        install(ContentNegotiation) {
-            json(json)
+    val client by lazy {
+        // we are doing it lazy because GitHubHelperKtorPlugin throws an exception if the Config hasnt been loaded,
+        // there is currently only one way to init SharedConstants before Config is loaded, which is by using: ./gradle generateMigrations
+        HttpClient {
+            install(GitHubHelperKtorPlugin)
+            install(ContentNegotiation) {
+                json(json)
+            }
         }
     }
 
