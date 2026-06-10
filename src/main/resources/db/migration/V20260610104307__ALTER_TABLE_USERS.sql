@@ -1,0 +1,1 @@
+ALTER TABLE users RENAME COLUMN slackid TO slack_id;
