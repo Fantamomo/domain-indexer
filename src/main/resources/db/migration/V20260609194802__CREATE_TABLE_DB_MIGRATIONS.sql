@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS db_migrations ("version" VARCHAR(255) NOT NULL, applied_at TIMESTAMP NOT NULL);

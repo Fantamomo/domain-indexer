@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(ktorLibs.plugins.ktor)
     alias(libs.plugins.kotlin.serialization)
+    id("org.jetbrains.exposed.plugin") version "1.3.0"
 }
 
 group = "com.fantamomo.hc"
@@ -45,4 +46,15 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(ktorLibs.server.testHost)
+}
+
+exposed {
+    migrations {
+        tablesPackage.set("com.fantamomo.hc.dns.db")
+        testContainersImageName.set("postgres:latest")
+    }
+}
+
+tasks.named("build") {
+    dependsOn("generateMigrations")
 }
