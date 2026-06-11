@@ -55,6 +55,6 @@ exposed {
     }
 }
 
-tasks.named("build") {
-    dependsOn("generateMigrations")
+tasks.named("processResources") {
+    mustRunAfter("generateMigrations")
 }
