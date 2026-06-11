@@ -54,7 +54,3 @@ exposed {
         testContainersImageName.set("postgres:latest")
     }
 }
-
-tasks.named("processResources") {
-    mustRunAfter("generateMigrations")
-}
