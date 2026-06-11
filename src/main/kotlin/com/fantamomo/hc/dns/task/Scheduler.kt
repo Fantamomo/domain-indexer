@@ -34,13 +34,15 @@ import kotlin.time.measureTime
 import kotlin.time.measureTimedValue
 
 object Scheduler {
+    private val TIME_BETWEEN_RUNS = 3.minutes
+
     private val logger = LoggerFactory.getLogger(Scheduler::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
         logger.error("A task in the scheduler encountered an exception", exception)
     }
     private val job = SupervisorJob(App.scope.coroutineContext.job)
-    private val scope = CoroutineScope(App.scope.coroutineContext + job + exceptionHandler)
 
+    private val scope = CoroutineScope(App.scope.coroutineContext + job + exceptionHandler)
     private val running = AtomicBoolean(false)
 
     suspend fun start() {
@@ -48,8 +50,8 @@ object Scheduler {
             throw IllegalStateException("Scheduler is already running")
         }
         // all the task that we do in the scheduler have already run, so it does not make sense to run directly again
-        logger.info("Scheduler started in 5 minutes")
-        delay(5.minutes)
+        logger.info("Scheduler started in ${TIME_BETWEEN_RUNS.humanReadable()}")
+        delay(TIME_BETWEEN_RUNS)
         // switching to the scheduler scope
         try {
             val job = scope.launch {
@@ -74,9 +76,9 @@ object Scheduler {
                     runTask()
                 }
                 errorCount = (errorCount--).coerceAtLeast(0)
-                val toDelay = (5.minutes - duration).takeIf { it.isPositive() } ?: Duration.ZERO
+                val toDelay = (TIME_BETWEEN_RUNS - duration).takeIf { it.isPositive() } ?: Duration.ZERO
                 if (toDelay == Duration.ZERO) {
-                    logger.info("Scheduled tasks took longer then 5 minutes (${duration.humanReadable()}), still waiting for 1 minute")
+                    logger.info("Scheduled tasks took longer then ${TIME_BETWEEN_RUNS.humanReadable()} (${duration.humanReadable()}), still waiting for 1 minute")
                     delay(1.minutes)
                     continue
                 } else {
