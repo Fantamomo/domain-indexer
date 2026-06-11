@@ -61,6 +61,10 @@ object App {
     }
 
     private suspend fun startServer(): Unit = coroutineScope {
+        // currently we dont have exactly something to show on the server so we will just skip creating the server
+        @Suppress("ConstantConditionIf")
+        if (true) return@coroutineScope
+
         logger.info("Creating server on ${Config.HOST}:${Config.PORT}")
         server = embeddedServer(
             Netty,
