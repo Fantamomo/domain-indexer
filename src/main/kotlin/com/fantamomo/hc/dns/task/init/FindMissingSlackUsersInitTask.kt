@@ -1,5 +1,6 @@
 package com.fantamomo.hc.dns.task.init
 
+import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.db.UserTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.model.SlackUserIdFoundState
@@ -10,6 +11,7 @@ import com.fantamomo.hc.dns.util.humanReadable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -37,6 +39,14 @@ object FindMissingSlackUsersInitTask : InitTask(
     override suspend fun run() {
         loadOverriddenGithubIdToSlackIdFile()
 
+        // we are running this task in parallel, because it will take a while to complete
+        // and we dont want to block the scheduler from starting
+        App.scope.launch {
+            findMissingSlackIds()
+        }
+    }
+
+    private suspend fun findMissingSlackIds() {
         val missingUsers = DatabaseManager.transaction {
             UserTable.select(UserTable.id, UserTable.username, UserTable.slackIdState)
                 .where { UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN }
@@ -110,10 +120,6 @@ object FindMissingSlackUsersInitTask : InitTask(
 
                     setSlackId(id, null, SlackUserIdFoundState.NOT_FOUND)
 
-                    if ((founded + notFound) % 10 == 0) {
-                        logger.info("Delaying for 5 seconds to avoid hitting the API rate limit")
-                        delay(5.seconds)
-                    }
                     continue
                 }
 
@@ -121,13 +127,6 @@ object FindMissingSlackUsersInitTask : InitTask(
 
                 setSlackId(id, slackId, SlackUserIdFoundState.FOUND)
                 founded++
-
-                // if we get here, the user was found via API requests
-                // se we are delaying a bit to avoid hitting the API rate limit
-                if ((founded + notFound) % 10 == 0) {
-                    logger.info("Delaying for 5 seconds to avoid hitting the API rate limit")
-                    delay(5.seconds)
-                }
             } catch (e: Exception) {
                 logger.error("Failed to resolve slack id for user $id($username)", e)
                 err++
