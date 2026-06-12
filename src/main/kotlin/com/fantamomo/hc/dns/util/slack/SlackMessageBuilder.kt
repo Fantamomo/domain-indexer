@@ -3,7 +3,6 @@ package com.fantamomo.hc.dns.util.slack
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 class SlackMessageBuilder {
     private val blocks = mutableListOf<SlackBlock>()
@@ -39,7 +38,7 @@ class SlackMessageBuilder {
     private fun overflow() = blocks.size >= BLOCK_LIMIT - 2
 
     fun build(altText: String = "Notification"): JsonObject = buildJsonObject {
-        put("text", altText)
+//        put("text", altText)
         put("blocks", JsonArray(blocks.map { it.toJson() }))
     }
 
