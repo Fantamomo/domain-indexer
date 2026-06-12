@@ -112,10 +112,15 @@ object SlackNotificationService {
                 contentType(ContentType.Application.Json)
                 setBody(payload)
             }
+            val bodyAsText = response.bodyAsText()
             if (response.status.isSuccess()) {
                 logger.info("Slack notification sent successfully")
+            } else if (response.status.value == 400 && bodyAsText == "invalid_blocks") {
+                // this should never happen in a production environment,
+                // the only reason for this to happen if we changed the building mechanics and did an error
+                logger.error("Failed to send Slack notification due to invalid blocks: $payload")
             } else {
-                logger.error("Slack notification failed — status: ${response.status}, body: ${response.bodyAsText()}")
+                logger.error("Slack notification failed — status: ${response.status}, body: $bodyAsText")
             }
         }.onFailure {
             logger.error("Slack notification error", it)
