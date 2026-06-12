@@ -2,21 +2,26 @@ package com.fantamomo.hc.dns.util
 
 import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedConstants
+import com.fantamomo.hc.dns.db.CommitTable
+import com.fantamomo.hc.dns.db.UserTable
+import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.model.dns.ForkProposal
 import com.fantamomo.hc.dns.model.dns.RecordKey
 import com.fantamomo.hc.dns.model.dns.RecordTimeline
+import com.fantamomo.hc.dns.util.slack.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import kotlinx.serialization.json.*
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
+import org.jetbrains.exposed.v1.core.neq
+import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.r2dbc.select
 import org.slf4j.LoggerFactory
 
 object SlackNotificationService {
 
     private val logger = LoggerFactory.getLogger(SlackNotificationService::class.java)
-
-    private const val BLOCK_LIMIT = 50
-    private const val CHUNK_SIZE = 10
 
     suspend fun sendDnsChangeNotification(
         newRecords: List<RecordTimeline> = emptyList(),
@@ -37,118 +42,72 @@ object SlackNotificationService {
             newForkProposals.isNotEmpty() || changedForkProposals.isNotEmpty() || closedForkProposals.isNotEmpty()
         if (!hasRecordChanges && !hasForkChanges) return
 
+        // - start
+        // there is s betterm way to do this with joins,
+        // but I dont know how to use them in Expose,
+        // so we are doing it the old way
+        val commitsToUser = DatabaseManager.transaction {
+            CommitTable.select(CommitTable.id, CommitTable.author, CommitTable.commiter)
+                .where { (CommitTable.author neq null) or (CommitTable.commiter neq null) }
+                .map { Pair(it[CommitTable.id], Pair(it[CommitTable.author], it[CommitTable.commiter])) }
+                .toList()
+                .toMap()
+        }
+        val users = DatabaseManager.transaction {
+            UserTable.select(UserTable.id, UserTable.slackId)
+                .where { UserTable.slackId neq null }
+                .map { Pair(it[UserTable.id], it[UserTable.slackId]) }
+                .toList()
+                .toMap()
+        }
+        val commitsToSlackId = commitsToUser.mapValues { (_, user) -> users[user.first] to users[user.second] }
+        // - end
+
         val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
                 newForkProposals.size + changedForkProposals.size + closedForkProposals.size
 
-        val blocks = buildBlocks {
-            header("DNS Changes - $totalChanges update${if (totalChanges != 1) "s" else ""}")
+        val payload = buildSlackMessage("DNS Changes") {
+            header("DNS Changes – $totalChanges update${if (totalChanges != 1) "s" else ""}")
 
-            section {
-                fields {
-                    if (newRecords.isNotEmpty()) field("*Added*\n${newRecords.size} record${newRecords.size.plural}")
-                    if (changedRecords.isNotEmpty()) field("*Changed*\n${changedRecords.size} record${changedRecords.size.plural}")
-                    if (removedRecords.isNotEmpty()) field("*Removed*\n${removedRecords.size} record${removedRecords.size.plural}")
-                    if (newForkProposals.isNotEmpty()) field("*New proposals*\n${newForkProposals.size}")
-                    if (changedForkProposals.isNotEmpty()) field("*Updated proposals*\n${changedForkProposals.size}")
-                    if (closedForkProposals.isNotEmpty()) field("*Closed proposals*\n${closedForkProposals.size}")
-                }
-            }
+            section(fields = buildList {
+                if (newRecords.isNotEmpty()) add("*Added*\n${newRecords.size} record${newRecords.size.plural}")
+                if (changedRecords.isNotEmpty()) add("*Changed*\n${changedRecords.size} record${changedRecords.size.plural}")
+                if (removedRecords.isNotEmpty()) add("*Removed*\n${removedRecords.size} record${removedRecords.size.plural}")
+                if (newForkProposals.isNotEmpty()) add("*New proposals*\n${newForkProposals.size}")
+                if (changedForkProposals.isNotEmpty()) add("*Updated proposals*\n${changedForkProposals.size}")
+                if (closedForkProposals.isNotEmpty()) add("*Closed proposals*\n${closedForkProposals.size}")
+            })
 
             divider()
 
             if (hasRecordChanges) {
-                if (newRecords.isNotEmpty()) {
-                    richRecordSection("🟢  New Records", newRecords) { rt ->
-                        RichEntry(
-                            fqdn = rt.key.fqdn,
-                            type = rt.key.type.name,
-                            newValue = rt.current?.value,
-                            meta = rt.current?.ttl?.let { "TTL: $it" }
-                        )
-                    }
-                }
-
-                if (changedRecords.isNotEmpty()) {
-                    richRecordSection("🟡  Changed Records", changedRecords) { rt ->
-                        val last = rt.timeline.lastOrNull()
-                        RichEntry(
-                            fqdn = rt.key.fqdn,
-                            type = rt.key.type.name,
-                            oldValue = last?.oldVersion?.value,
-                            newValue = (last?.newVersion ?: rt.current)?.value,
-                            meta = rt.current?.ttl?.let { "TTL: $it" }
-                        )
-                    }
-                }
-
-                if (removedRecords.isNotEmpty()) {
-                    richRecordSection("🔴  Removed Records", removedRecords) { rt ->
-                        val old = rt.timeline.lastOrNull()?.oldVersion ?: rt.current
-                        RichEntry(
-                            fqdn = rt.key.fqdn,
-                            type = rt.key.type.name,
-                            oldValue = old?.value
-                        )
-                    }
-                }
+                addDiffSection("🟢  New Records", newRecords.map { it.toNewDiff() }, commitsToSlackId)
+                addDiffSection("🟡  Changed Records", changedRecords.map { it.toChangedDiff() }, commitsToSlackId)
+                addDiffSection("🔴  Removed Records", removedRecords.map { it.toRemovedDiff() }, commitsToSlackId)
             }
 
             if (hasForkChanges) {
                 divider()
-
-                if (newForkProposals.isNotEmpty()) {
-                    richRecordSection("🔀  New Proposals", newForkProposals) { p ->
-                        RichEntry(
-                            fqdn = p.key.fqdn,
-                            type = p.key.type.name,
-                            repo = "${p.repository}:${p.branch}",
-                            meta = p.current?.ttl?.let { "TTL: $it" },
-                            newValue = p.current?.value
-                        )
-                    }
-                }
-
-                if (changedForkProposals.isNotEmpty()) {
-                    richRecordSection("🟡  Updated Proposals", changedForkProposals) { p ->
-                        val last = p.timeline.lastOrNull()
-                        RichEntry(
-                            fqdn = p.key.fqdn,
-                            type = p.key.type.name,
-                            repo = "${p.repository}:${p.branch}",
-                            oldValue = last?.oldVersion?.value,
-                            newValue = (last?.newVersion ?: p.current)?.value,
-                            meta = p.current?.ttl?.let { "TTL: $it" }
-                        )
-                    }
-                }
-
-                if (closedForkProposals.isNotEmpty()) {
-                    richRecordSection("🔴  Closed Proposals", closedForkProposals) { p ->
-                        RichEntry(
-                            fqdn = p.key.fqdn,
-                            type = p.key.type.name,
-                            repo = "${p.repository}:${p.branch}",
-                            oldValue = p.current?.value
-                        )
-                    }
-                }
+                addDiffSection("🔀  New Proposals", newForkProposals.map { it.toNewDiff() }, commitsToSlackId)
+                addDiffSection(
+                    "🟡  Updated Proposals",
+                    changedForkProposals.map { it.toChangedDiff() },
+                    commitsToSlackId
+                )
+                addDiffSection("🔴  Closed Proposals", closedForkProposals.map { it.toClosedDiff() }, commitsToSlackId)
             }
 
-            context(":star: star the <https://github.com/fantamomo/domain-indexer|repo>")
+            contextMarkdown(":star: star the <https://github.com/fantamomo/domain-indexer|repo>")
         }
 
-        post(webhookUrl, blocks)
+        post(webhookUrl, payload)
     }
 
     suspend fun sendNewRecordsNotification(newRecords: List<RecordTimeline>) =
         sendDnsChangeNotification(newRecords = newRecords)
 
-    private suspend fun post(webhookUrl: String, blocks: List<JsonObject>) {
+    private suspend fun post(webhookUrl: String, payload: kotlinx.serialization.json.JsonObject) {
         runCatching {
-            val payload = buildJsonObject {
-                put("text", "DNS Change Notification")
-                put("blocks", JsonArray(blocks.take(BLOCK_LIMIT)))
-            }
             val response = SharedConstants.client.post(webhookUrl) {
                 contentType(ContentType.Application.Json)
                 setBody(payload)
@@ -163,270 +122,85 @@ object SlackNotificationService {
         }
     }
 
-    private data class RichEntry(
-        val fqdn: String,
-        val type: String,
-        val repo: String? = null,
-        val oldValue: String? = null,
-        val newValue: String? = null,
-        val meta: String? = null,
+    private fun RecordTimeline.toNewDiff() = RecordDiff(
+        fqdn = key.fqdn,
+        type = key.type.name,
+        valueChange = current?.value?.let { ValueChange.Added(it) },
+        ttlChange = current?.ttl?.let { FieldChange(it, it) },
+        commit = current?.commit,
     )
 
-    private fun buildBlocks(init: BlockBuilder.() -> Unit): List<JsonObject> =
-        BlockBuilder().apply(init).build()
-
-    private class BlockBuilder {
-        private val blocks = mutableListOf<JsonObject>()
-
-        fun header(text: String) {
-            if (overflow()) return
-            blocks += jsonObjectOf(
-                "type" to "header",
-                "text" to jsonObjectOf("type" to "plain_text", "text" to text.cap(150), "emoji" to true)
-            )
-        }
-
-        fun divider() {
-            if (overflow()) return
-            if (blocks.lastOrNull()?.isDivider == true) return
-            blocks += jsonObjectOf("type" to "divider")
-        }
-
-        fun section(init: SectionBuilder.() -> Unit) {
-            if (overflow()) return
-            SectionBuilder().apply(init).build()?.let { blocks += it }
-        }
-
-        fun context(text: String) {
-            if (overflow()) return
-            blocks += jsonObjectOf(
-                "type" to "context",
-                "elements" to JsonArray(
-                    listOf(
-                        jsonObjectOf("type" to "mrkdwn", "text" to text.cap(300))
-                    )
-                )
-            )
-        }
-
-        fun <T> richRecordSection(title: String, items: List<T>, toEntry: (T) -> RichEntry) {
-            if (overflow()) return
-
-            blocks += jsonObjectOf(
-                "type" to "rich_text",
-                "elements" to JsonArray(
-                    listOf(
-                        jsonObjectOf(
-                            "type" to "rich_text_section",
-                            "elements" to JsonArray(
-                                listOf(
-                                    jsonObjectOf(
-                                        "type" to "text",
-                                        "text" to "$title (${items.size})",
-                                        "style" to jsonObjectOf("bold" to true)
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-
-            items.chunked(CHUNK_SIZE).forEachIndexed { chunkIndex, chunk ->
-                if (overflow()) return
-
-                val richElements = mutableListOf<JsonObject>()
-
-                if (chunkIndex > 0) {
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to "Part ${chunkIndex + 1}\n",
-                        "style" to jsonObjectOf("italic" to true)
-                    )
-                }
-
-                chunk.forEachIndexed { index, item ->
-                    val e = toEntry(item)
-
-                    richElements += jsonObjectOf("type" to "text", "text" to (if (index > 0) "\n\n" else "\n"))
-
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to "Name: ",
-                        "style" to jsonObjectOf("bold" to true)
-                    )
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to e.fqdn.sanitize(),
-                        "style" to jsonObjectOf("code" to true)
-                    )
-                    richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to "Type: ",
-                        "style" to jsonObjectOf("bold" to true)
-                    )
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to e.type,
-                        "style" to jsonObjectOf("code" to true)
-                    )
-
-                    if (e.repo != null) {
-                        richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                        richElements += jsonObjectOf(
-                            "type" to "text",
-                            "text" to "Repo: ",
-                            "style" to jsonObjectOf("bold" to true)
-                        )
-                        richElements += jsonObjectOf(
-                            "type" to "text",
-                            "text" to e.repo.sanitize(),
-                            "style" to jsonObjectOf("code" to true)
-                        )
-                    }
-
-
-                    richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                    richElements += jsonObjectOf(
-                        "type" to "text",
-                        "text" to "Value: ",
-                        "style" to jsonObjectOf("bold" to true)
-                    )
-                    when {
-                        e.oldValue != null && e.newValue != null -> {
-                            richElements += jsonObjectOf(
-                                "type" to "text",
-                                "text" to e.oldValue.sanitize().cap(80),
-                                "style" to jsonObjectOf("code" to true, "strike" to true)
-                            )
-                            richElements += jsonObjectOf("type" to "text", "text" to "  ->  ")
-                            richElements += jsonObjectOf(
-                                "type" to "text",
-                                "text" to e.newValue.sanitize().cap(80),
-                                "style" to jsonObjectOf("code" to true)
-                            )
-                        }
-
-                        e.oldValue != null -> {
-                            richElements += jsonObjectOf(
-                                "type" to "text",
-                                "text" to e.oldValue.sanitize().cap(100),
-                                "style" to jsonObjectOf("code" to true, "strike" to true)
-                            )
-                        }
-
-                        e.newValue != null -> {
-                            richElements += jsonObjectOf(
-                                "type" to "text",
-                                "text" to e.newValue.sanitize().cap(120),
-                                "style" to jsonObjectOf("code" to true)
-                            )
-                        }
-                    }
-
-                    if (e.meta != null) {
-                        richElements += jsonObjectOf("type" to "text", "text" to "\n")
-                        richElements += jsonObjectOf(
-                            "type" to "text",
-                            "text" to e.meta.sanitize(),
-                            "style" to jsonObjectOf("italic" to true)
-                        )
-                    }
-                }
-
-                richElements += jsonObjectOf("type" to "text", "text" to "\n")
-
-                blocks += jsonObjectOf(
-                    "type" to "rich_text",
-                    "elements" to JsonArray(
-                        listOf(
-                            jsonObjectOf(
-                                "type" to "rich_text_section",
-                                "elements" to JsonArray(richElements)
-                            )
-                        )
-                    )
-                )
-            }
-
-            if (items.size > CHUNK_SIZE * ((blocks.size / CHUNK_SIZE).coerceAtLeast(1))) {
-                blocks += jsonObjectOf(
-                    "type" to "context",
-                    "elements" to JsonArray(
-                        listOf(
-                            jsonObjectOf("type" to "mrkdwn", "text" to "_Some entries omitted due to block limit_")
-                        )
-                    )
-                )
-            }
-
-            divider()
-        }
-
-        private fun overflow() = blocks.size >= BLOCK_LIMIT - 2
-
-        fun build(): List<JsonObject> = blocks
+    private fun RecordTimeline.toChangedDiff(): RecordDiff {
+        val last = timeline.lastOrNull()
+        val oldTtl = last?.oldVersion?.ttl
+        val newTtl = (last?.newVersion ?: current)?.ttl
+        return RecordDiff(
+            fqdn = key.fqdn,
+            type = key.type.name,
+            valueChange = buildValueChange(
+                old = last?.oldVersion?.value,
+                new = (last?.newVersion ?: current)?.value,
+            ),
+            ttlChange = if (oldTtl != null && newTtl != null) FieldChange(oldTtl, newTtl) else null,
+            commit = last?.commit ?: current?.commit,
+        )
     }
 
-    private class SectionBuilder {
-        private var text: String? = null
-        private val fieldList = mutableListOf<JsonPrimitive>()
-
-        fun text(value: String) {
-            text = value
-        }
-
-        fun fields(init: FieldsBuilder.() -> Unit) {
-            fieldList += FieldsBuilder().apply(init).build()
-        }
-
-        fun build(): JsonObject? {
-            if (text == null && fieldList.isEmpty()) return null
-            return buildJsonObject {
-                put("type", "section")
-                text?.let { put("text", jsonObjectOf("type" to "mrkdwn", "text" to it.cap(3000))) }
-                if (fieldList.isNotEmpty()) {
-                    put("fields", JsonArray(fieldList.map { jsonObjectOf("type" to "mrkdwn", "text" to it) }))
-                }
-            }
-        }
+    private fun RecordTimeline.toRemovedDiff(): RecordDiff {
+        val old = timeline.lastOrNull()?.oldVersion ?: current
+        return RecordDiff(
+            fqdn = key.fqdn,
+            type = key.type.name,
+            valueChange = old?.value?.let { ValueChange.Removed(it) },
+            ttlChange = old?.ttl?.let { FieldChange(it, it) },
+        )
     }
 
-    private class FieldsBuilder {
-        private val fields = mutableListOf<JsonPrimitive>()
-        fun field(text: String) {
-            fields += JsonPrimitive(text.cap(2000))
-        }
+    private fun ForkProposal.toNewDiff() = RecordDiff(
+        fqdn = key.fqdn,
+        type = key.type.name,
+        repo = "${repository}:${branch}",
+        valueChange = current?.value?.let { ValueChange.Added(it) },
+        ttlChange = current?.ttl?.let { FieldChange(it, it) },
+        commit = current?.commit,
+    )
 
-        fun build() = fields
+    private fun ForkProposal.toChangedDiff(): RecordDiff {
+        val last = timeline.lastOrNull()
+        val oldTtl = last?.oldVersion?.ttl
+        val newTtl = (last?.newVersion ?: current)?.ttl
+        return RecordDiff(
+            fqdn = key.fqdn,
+            type = key.type.name,
+            repo = "${repository}:${branch}",
+            valueChange = buildValueChange(
+                old = last?.oldVersion?.value,
+                new = (last?.newVersion ?: current)?.value,
+            ),
+            ttlChange = if (oldTtl != null && newTtl != null) FieldChange(oldTtl, newTtl) else null,
+            commit = last?.commit ?: current?.commit,
+        )
     }
 
-    private val JsonObject.isDivider get() = get("type")?.jsonPrimitive?.content == "divider"
+    private fun ForkProposal.toClosedDiff() = RecordDiff(
+        fqdn = key.fqdn,
+        type = key.type.name,
+        repo = "${repository}:${branch}",
+        valueChange = current?.value?.let { ValueChange.Removed(it) },
+        ttlChange = current?.ttl?.let { FieldChange(it, it) },
+        commit = current?.commit,
+    )
+
+    private fun buildValueChange(old: String?, new: String?): ValueChange? = when {
+        old == null && new != null -> ValueChange.Added(new)
+        old != null && new == null -> ValueChange.Removed(old)
+        old != null && new != null && old != new -> ValueChange.Modified(old, new)
+        old != null && new != null -> ValueChange.Unchanged(new)
+        else -> null
+    }
 
     private val RecordKey.fqdn
         get() = if (name == "" || name == "@") host else "$name.$host"
 
     private val Int.plural get() = if (this != 1) "s" else ""
-
-    private fun String.cap(max: Int): String =
-        if (length <= max) this else take(max - 1) + "…"
-
-    private fun String.sanitize(): String =
-        replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]"), " ")
-            .replace("\r\n", "\n")
-            .replace("\r", "\n")
-            .trim()
-
-    private fun jsonObjectOf(vararg pairs: Pair<String, Any?>): JsonObject =
-        JsonObject(pairs.associate { (k, v) ->
-            k to when (v) {
-                is JsonElement -> v
-                is String -> JsonPrimitive(v)
-                is Boolean -> JsonPrimitive(v)
-                is Number -> JsonPrimitive(v)
-                null -> JsonNull
-                else -> JsonPrimitive(v.toString())
-            }
-        })
 }
