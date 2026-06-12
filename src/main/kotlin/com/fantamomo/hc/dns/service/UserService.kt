@@ -46,7 +46,6 @@ object UserService {
                 this[UserTable.email] = it.email
                 this[UserTable.type] = it.type
                 this[UserTable.slackId] = it.slackId
-                this[UserTable.deleted] = true
             }
         }
     }

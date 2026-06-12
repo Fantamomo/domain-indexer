@@ -19,8 +19,5 @@ object UserTable : Table("users") {
     val slackIdState = enumerationByName<SlackUserIdFoundState>("slack_id_state", 15)
         .default(SlackUserIdFoundState.UNKNOWN)
 
-    val deleted = bool("delete")
-        .default(false)
-
     override val primaryKey = PrimaryKey(id)
 }
