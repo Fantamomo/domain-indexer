@@ -32,6 +32,10 @@ object SharedConstants {
     // that is the internal github id of the hackclub/dns repo
     const val HACKCLUB_DNS_ID = 123017957L
 
+    const val WEB_FLOW_GITHUB_ID = 19864447L
+
+    const val SLACK_GITHUB_PROFILE_ID = "Xf09V176UVK5"
+
     val localDateTimeFormat = LocalDateTime.Format {
         hour()
         char(':')
