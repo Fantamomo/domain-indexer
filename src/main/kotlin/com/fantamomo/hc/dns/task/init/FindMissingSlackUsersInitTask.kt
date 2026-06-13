@@ -16,7 +16,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.update
 import kotlin.time.Clock
@@ -47,6 +49,30 @@ object FindMissingSlackUsersInitTask : InitTask(
     }
 
     private suspend fun findMissingSlackIds() {
+        val overriddenIds = overriddenGitHubIdToSlackId.keys
+
+        if (overriddenIds.isNotEmpty()) {
+            try {
+                val unoverriddenSlackIds = DatabaseManager.transaction {
+                    UserTable.select(UserTable.id, UserTable.slackIdState)
+                        .where { (UserTable.slackIdState eq SlackUserIdFoundState.NOT_FOUND) and (UserTable.id inList overriddenIds) }
+                        .map { it[UserTable.id] }
+                        .toList()
+                }
+                if (unoverriddenSlackIds.isNotEmpty()) {
+                    logger.info("Found ${unoverriddenSlackIds.size} users with missing slack ids, but they are overridden in the overridden github id to slack id file")
+                    for (id in unoverriddenSlackIds) {
+                        val slackId = overriddenGitHubIdToSlackId[id]
+                        setSlackId(id, slackId, SlackUserIdFoundState.OVERRIDDEN)
+                        logger.info("Resolved slack id for user $id from overridden github id to slack id file")
+                    }
+                    logger.info("Resolved ${unoverriddenSlackIds.size} users with missing slack ids, but they are overridden in the overridden github id to slack id file")
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to resolve slack ids for users with overridden github ids", e)
+            }
+        }
+
         val missingUsers = DatabaseManager.transaction {
             UserTable.select(UserTable.id, UserTable.username, UserTable.slackIdState)
                 .where { UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN }
