@@ -85,6 +85,12 @@ object Config {
         canBeSetByEnv = true
     )
 
+    val IDS_TO_IGNORE: String by string(
+        key = "ids.to.ignore",
+        default = "",
+        description = "A comma-separated list of github ids to ignore"
+    )
+
     fun init() {
         if (properties.isNotEmpty()) return
         ensureConfigExists()
