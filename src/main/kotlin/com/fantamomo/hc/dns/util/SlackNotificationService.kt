@@ -46,35 +46,40 @@ object SlackNotificationService {
         val authorUserAlias = UserTable.alias("author_user")
         val commiterUserAlias = UserTable.alias("commiter_user")
 
-        val commitsToSlackId = DatabaseManager.transaction {
-            CommitTable
-                .join(
-                    authorUserAlias,
-                    JoinType.LEFT,
-                    CommitTable.author,
-                    authorUserAlias[UserTable.id]
-                )
-                .join(
-                    commiterUserAlias,
-                    JoinType.LEFT,
-                    CommitTable.commiter,
-                    commiterUserAlias[UserTable.id]
-                )
-                .select(
-                    CommitTable.id,
-                    authorUserAlias[UserTable.slackId],
-                    commiterUserAlias[UserTable.slackId],
-                )
-                .where {
-                    (CommitTable.author neq null) or
-                            (CommitTable.commiter neq null)
-                }
-                .associate {
-                    it[CommitTable.id] to Pair(
-                        it[authorUserAlias[UserTable.slackId]],
-                        it[commiterUserAlias[UserTable.slackId]]
+        val commitsToSlackId = try {
+            DatabaseManager.transaction {
+                CommitTable
+                    .join(
+                        authorUserAlias,
+                        JoinType.LEFT,
+                        CommitTable.author,
+                        authorUserAlias[UserTable.id]
                     )
-                }
+                    .join(
+                        commiterUserAlias,
+                        JoinType.LEFT,
+                        CommitTable.commiter,
+                        commiterUserAlias[UserTable.id]
+                    )
+                    .select(
+                        CommitTable.id,
+                        authorUserAlias[UserTable.slackId],
+                        commiterUserAlias[UserTable.slackId],
+                    )
+                    .where {
+                        (CommitTable.author neq null) or
+                                (CommitTable.commiter neq null)
+                    }
+                    .associate {
+                        it[CommitTable.id] to Pair(
+                            it[authorUserAlias[UserTable.slackId]],
+                            it[commiterUserAlias[UserTable.slackId]]
+                        )
+                    }
+            }
+        } catch (e: Exception) {
+            logger.error("Failed to load commits to slack ids", e)
+            emptyMap()
         }
 
         val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
