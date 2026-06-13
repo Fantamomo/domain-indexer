@@ -28,7 +28,7 @@ object FindSlackUserId {
     // which is easy to say, but hard to do
     suspend fun find(githubUsername: String): String? {
         if (Config.SLACK_USER_OAUTH_TOKEN.isBlank() || Config.SLACK_BOT_TOKEN.isBlank()) {
-            logger.warn("Slack user oauth token or bot token is not configured, user lookup is not possible, skipping")
+            logger.warn("Slack user oauth token and/or bot token is not configured, user lookup is not possible, skipping")
             return null
         }
 
