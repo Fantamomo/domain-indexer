@@ -12,8 +12,9 @@ import com.fantamomo.hc.dns.util.slack.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.associate
+import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.alias
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.r2dbc.select
@@ -42,26 +43,39 @@ object SlackNotificationService {
             newForkProposals.isNotEmpty() || changedForkProposals.isNotEmpty() || closedForkProposals.isNotEmpty()
         if (!hasRecordChanges && !hasForkChanges) return
 
-        // - start
-        // there is s betterm way to do this with joins,
-        // but I dont know how to use them in Expose,
-        // so we are doing it the old way
-        val commitsToUser = DatabaseManager.transaction {
-            CommitTable.select(CommitTable.id, CommitTable.author, CommitTable.commiter)
-                .where { (CommitTable.author neq null) or (CommitTable.commiter neq null) }
-                .map { Pair(it[CommitTable.id], Pair(it[CommitTable.author], it[CommitTable.commiter])) }
-                .toList()
-                .toMap()
+        val authorUserAlias = UserTable.alias("author_user")
+        val commiterUserAlias = UserTable.alias("commiter_user")
+
+        val commitsToSlackId = DatabaseManager.transaction {
+            CommitTable
+                .join(
+                    authorUserAlias,
+                    JoinType.LEFT,
+                    CommitTable.author,
+                    authorUserAlias[UserTable.id]
+                )
+                .join(
+                    commiterUserAlias,
+                    JoinType.LEFT,
+                    CommitTable.commiter,
+                    commiterUserAlias[UserTable.id]
+                )
+                .select(
+                    CommitTable.id,
+                    authorUserAlias[UserTable.slackId],
+                    commiterUserAlias[UserTable.slackId],
+                )
+                .where {
+                    (CommitTable.author neq null) or
+                            (CommitTable.commiter neq null)
+                }
+                .associate {
+                    it[CommitTable.id] to Pair(
+                        it[authorUserAlias[UserTable.slackId]],
+                        it[commiterUserAlias[UserTable.slackId]]
+                    )
+                }
         }
-        val users = DatabaseManager.transaction {
-            UserTable.select(UserTable.id, UserTable.slackId)
-                .where { UserTable.slackId neq null }
-                .map { Pair(it[UserTable.id], it[UserTable.slackId]) }
-                .toList()
-                .toMap()
-        }
-        val commitsToSlackId = commitsToUser.mapValues { (_, user) -> users[user.first] to users[user.second] }
-        // - end
 
         val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
                 newForkProposals.size + changedForkProposals.size + closedForkProposals.size
