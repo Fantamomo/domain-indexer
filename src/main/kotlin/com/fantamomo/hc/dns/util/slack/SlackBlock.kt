@@ -151,10 +151,6 @@ internal fun jsonObj(vararg pairs: Pair<String, Any?>): JsonObject =
 internal fun String.cap(max: Int): String =
     if (length <= max) this else take(max - 1) + "…"
 
-internal fun String.sanitize(): String {
-    if (this == "\n") return this
-    return replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]"), " ")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .trim()
-}
+internal fun String.sanitize(): String = replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]"), " ")
+    .replace("\r\n", "\n")
+    .replace("\r", "\n")
