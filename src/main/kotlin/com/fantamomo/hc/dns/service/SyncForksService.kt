@@ -4,6 +4,7 @@ import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.db.ForkTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.model.Fork
+import com.fantamomo.hc.dns.util.RepositoriesToIgnore
 import com.fantamomo.hc.dns.util.humanReadable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -92,12 +93,13 @@ object SyncForksService {
         val dbForksIds = dbForks.associateBy { it.id }
         logger.info("Found ${dbForks.size} forks in db")
 
-        val newForks = forks.filter { it.fork.id !in dbForksIds }
+        val newForks = forks.filter { it.fork.id !in dbForksIds && RepositoriesToIgnore.canIndex(it.fork.id) }
 
         val updatedForks = forks.filter {
             val dbFork = dbForksIds[it.fork.id]
 
             dbFork != null &&
+                    RepositoriesToIgnore.canIndex(it.fork.id) &&
                     (
                             dbFork.pushedAt != it.fork.pushedAt ||
                                     dbFork.lastUpdatedAt != it.fork.lastUpdatedAt
@@ -111,7 +113,8 @@ object SyncForksService {
 
         val fetchBecausePush = updatedForks.count { it.fork.pushedAt != dbForksIds[it.fork.id]?.pushedAt }
         val fetchBecauseUpdate = updatedForks.count { it.fork.lastUpdatedAt != dbForksIds[it.fork.id]?.lastUpdatedAt }
-        val fetchBecauseBoth = updatedForks.count { it.fork.pushedAt != dbForksIds[it.fork.id]?.pushedAt && it.fork.lastUpdatedAt != dbForksIds[it.fork.id]?.lastUpdatedAt }
+        val fetchBecauseBoth =
+            updatedForks.count { it.fork.pushedAt != dbForksIds[it.fork.id]?.pushedAt && it.fork.lastUpdatedAt != dbForksIds[it.fork.id]?.lastUpdatedAt }
         val fetchBecauseNew = newForks.size
 
 

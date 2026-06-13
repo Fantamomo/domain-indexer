@@ -1,6 +1,7 @@
 package com.fantamomo.hc.dns.task.init
 
 import com.fantamomo.hc.dns.App
+import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.db.UserTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.model.SlackUserIdFoundState
@@ -16,7 +17,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.update
 import kotlin.time.Clock
@@ -47,6 +51,37 @@ object FindMissingSlackUsersInitTask : InitTask(
     }
 
     private suspend fun findMissingSlackIds() {
+        val overriddenIds = overriddenGitHubIdToSlackId.keys
+
+        if (overriddenIds.isNotEmpty()) {
+            try {
+                val unoverriddenSlackIds = DatabaseManager.transaction {
+                    UserTable.select(UserTable.id, UserTable.slackIdState)
+                        .where {
+                            // we are only overriding users that are explicit UNKNOWN or NOT_FOUND
+                            // if overridden users have a custom id set, we don't want to override it
+                            // NOT_FOUND is only possible if we add users to the overridden GitHub id to slack id file
+                            ((UserTable.slackIdState eq SlackUserIdFoundState.NOT_FOUND) or
+                                    (UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN)) and
+                                    (UserTable.id inList overriddenIds)
+                        }
+                        .map { it[UserTable.id] }
+                        .toList()
+                }
+                if (unoverriddenSlackIds.isNotEmpty()) {
+                    logger.info("Found ${unoverriddenSlackIds.size} users with missing slack ids, but they are overridden in the overridden github id to slack id file")
+                    for (id in unoverriddenSlackIds) {
+                        val slackId = overriddenGitHubIdToSlackId[id]
+                        setSlackId(id, slackId, SlackUserIdFoundState.OVERRIDDEN)
+                        logger.info("Resolved slack id for user $id from overridden github id to slack id file")
+                    }
+                    logger.info("Resolved ${unoverriddenSlackIds.size} users with missing slack ids, but they are overridden in the overridden github id to slack id file")
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to resolve slack ids for users with overridden github ids", e)
+            }
+        }
+
         val missingUsers = DatabaseManager.transaction {
             UserTable.select(UserTable.id, UserTable.username, UserTable.slackIdState)
                 .where { UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN }
@@ -55,6 +90,15 @@ object FindMissingSlackUsersInitTask : InitTask(
         }
 
         if (missingUsers.isEmpty()) return
+
+        // if we are missing slack ids but no bot and oauth token is configured, we cannot resolve them
+        // so we just log a warning and return
+        if (Config.SLACK_USER_OAUTH_TOKEN.isBlank() || Config.SLACK_BOT_TOKEN.isBlank()) {
+            logger.warn("Found ${missingUsers.size} users with missing slack ids,")
+            logger.warn("but slack user oauth token and/or bot token is not configured, user lookup is not possible")
+            logger.warn("Please set slack.user.oauth.token and slack.bot.token in the config.properties file")
+            return
+        }
 
         logger.info("Found ${missingUsers.size} users with missing slack ids, trying to resolve them")
         logger.info("Will take approximately ${(missingUsers.size / 10.0).minutes.humanReadable()}")

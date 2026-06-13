@@ -9,6 +9,7 @@ import com.fantamomo.hc.dns.model.Head
 import com.fantamomo.hc.dns.model.dns.*
 import com.fantamomo.hc.dns.util.DnsIndexer
 import com.fantamomo.hc.dns.util.DnsParser
+import com.fantamomo.hc.dns.util.RepositoriesToIgnore
 import com.fantamomo.hc.dns.util.yaml.YamlParser
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
@@ -88,7 +89,9 @@ object DnsManager {
                 continue
             }
             val repoName = repoIdToRepo[forkId] ?: run {
-                logger.warn("Unknown fork ID: $forkId, skipping")
+                if (!RepositoriesToIgnore.canIndex(forkId)) {
+                    logger.warn("Unknown fork ID: $forkId, skipping")
+                }
                 continue
             }
             val head = headsById[forkId]?.find { it.branch == branch }
