@@ -140,6 +140,13 @@ object Scheduler {
             logger.info("No changes detected, skipping this iteration")
             return
         }
+        try {
+            UserService.updateUsers(GetForksInitTask.forks.map { it.user })
+        } catch (e: Exception) {
+            // bad if it happens, but we can still continue
+            logger.error("Failed to update users while fetching forks", e)
+        }
+
         if (forksUpdated) {
             // we only need to update the forks because the fetch command already updated the origin
             try {
@@ -147,12 +154,6 @@ object Scheduler {
             } catch (e: Exception) {
                 logger.error("Unexpected exception while syncing forks", e)
             }
-        }
-        try {
-            UserService.updateUsers(GetForksInitTask.forks.map { it.user })
-        } catch (e: Exception) {
-            // bad if it happens, but we can still continue
-            logger.error("Failed to update users while fetching forks", e)
         }
         try {
             val newCommits = SyncCommitService.sync()
