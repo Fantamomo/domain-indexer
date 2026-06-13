@@ -1,0 +1,1 @@
+ALTER TABLE commits ADD requested_from_github BOOLEAN DEFAULT FALSE NOT NULL;

@@ -71,6 +71,20 @@ object Config {
         canBeSetByEnv = true
     )
 
+    val SLACK_USER_OAUTH_TOKEN: String by string(
+        key = "slack.user.oauth.token",
+        default = "",
+        description = "The Slack user OAuth token used to map users by there github account to there slack id",
+        canBeSetByEnv = true
+    )
+
+    val SLACK_BOT_TOKEN: String by string(
+        key = "slack.bot.token",
+        default = "",
+        description = "The Slack bot token used to request user profiles.",
+        canBeSetByEnv = true
+    )
+
     fun init() {
         if (properties.isNotEmpty()) return
         ensureConfigExists()

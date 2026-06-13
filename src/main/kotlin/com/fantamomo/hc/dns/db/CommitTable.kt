@@ -10,6 +10,7 @@ object CommitTable : Table("commits") {
     val parentsCount = integer("parents_count")
     val createdAt = long("created_at")
     val commitedAt = long("commited_at")
+    val requestedFromGitHub = bool("requested_from_github").default(false)
 
     override val primaryKey = PrimaryKey(id)
 }

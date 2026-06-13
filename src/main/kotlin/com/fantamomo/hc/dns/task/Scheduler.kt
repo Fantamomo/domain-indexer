@@ -84,7 +84,13 @@ object Scheduler {
                 } else {
                     val rerunAt = Clock.System.now() + toDelay
                     val local = rerunAt.toLocalDateTime(TimeZone.currentSystemDefault())
-                    logger.info("Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()} (rerun at ${SharedConstants.localDateTimeFormat.format(local)})")
+                    logger.info(
+                        "Scheduled tasks finished in ${duration.humanReadable()}, waiting for ${toDelay.humanReadable()} (rerun at ${
+                            SharedConstants.localDateTimeFormat.format(
+                                local
+                            )
+                        })"
+                    )
                 }
                 delay(toDelay)
                 errorCount = (errorCount--).coerceAtLeast(0)

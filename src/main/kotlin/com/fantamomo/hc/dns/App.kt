@@ -23,6 +23,7 @@ object App {
     val initTasks = listOf(
         ConnectDatabaseTask,
         DnsIndexTask,
+        FindMissingSlackUsersInitTask,
         GetForksInitTask,
         InitDatabaseTablesTask,
         InitForksTask,

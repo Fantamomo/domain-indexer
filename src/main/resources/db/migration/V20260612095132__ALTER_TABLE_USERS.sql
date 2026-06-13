@@ -1,0 +1,1 @@
+ALTER TABLE users ADD slack_id_state VARCHAR(15) DEFAULT 'UNKNOWN' NOT NULL;
