@@ -26,7 +26,10 @@ fun SlackMessageBuilder.addDiffSection(
         richText {
             section {
                 if (chunkIndex > 0) italic("Part ${chunkIndex + 1}")
-                chunk.forEach { diff -> renderDiff(diff, commitsToSlackId) }
+                chunk.forEachIndexed { index, diff ->
+                    if (index > 0) newline()
+                    renderDiff(diff, commitsToSlackId)
+                }
                 newline()
             }
         }
