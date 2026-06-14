@@ -12,8 +12,9 @@ object DnsParser {
         if (yaml !is MapYamlElement) return emptyList()
         val records = mutableListOf<Record>()
         for ((key, value) in yaml.map) {
-            if (value !is MapYamlElement) continue
-            val record = parseRecord(host, key, value)
+            val element = (value as? ListYamlElement)?.elements?.firstOrNull() ?: value
+            if (element !is MapYamlElement) continue
+            val record = parseRecord(host, key, element)
             if (record != null) records += record
         }
         return records
