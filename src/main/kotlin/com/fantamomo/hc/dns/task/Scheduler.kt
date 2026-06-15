@@ -3,9 +3,11 @@ package com.fantamomo.hc.dns.task
 import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.data.SharedValues
+import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.*
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.manager.DnsManager
+import com.fantamomo.hc.dns.model.Head
 import com.fantamomo.hc.dns.model.SlackUserIdFoundState
 import com.fantamomo.hc.dns.model.dns.*
 import com.fantamomo.hc.dns.service.*
@@ -43,6 +45,8 @@ object Scheduler {
 
     private val scope = CoroutineScope(App.scope.coroutineContext + job + exceptionHandler)
     private val running = AtomicBoolean(false)
+
+    private val markerException = Exception("Marker exception for internal use, should never be printed to the logs")
 
     suspend fun start() {
         if (!running.compareAndSet(expectedValue = false, newValue = true)) {
@@ -154,17 +158,72 @@ object Scheduler {
                 logger.error("Unexpected exception while syncing forks", e)
             }
         }
-        try {
-            val newCommits = SyncCommitService.sync()
-            if (!newCommits) {
-                // no new commits -> no need to reindex
-                logger.info("No new commits, skipping this iteration")
-                return
-            }
+        val newCommits = try {
+            SyncCommitService.sync()
         } catch (e: Exception) {
             logger.error("Unexpected exception while syncing commits", e)
             // sadly if the sync fails, we need to stop the iteration, because the commits need to be in the db for later actions
             throw e
+        }
+        if (!newCommits) {
+            // if there are no new commits, it could still be possible that the records have changed (due git fast-forward or any other reason)
+            try {
+                val dbRefs = DatabaseManager.transaction {
+                    HeadTable.selectAll()
+                        .map { Head(it[HeadTable.repoId], it[HeadTable.branch], it[HeadTable.commit]) }
+                        .toList()
+                }
+                if (dbRefs.size != git.repository.refDatabase.refs.size) {
+                    // fast path, if the ref's size has changed, we jump directly to the index task,
+                    logger.info("The refs size has changed, starting the index task")
+                    throw markerException
+                }
+                // slow path, maybe a head of a branch has been updated, or a branch was added and another removed,
+                // so we check every head from the db with the real refs
+                val headsById = dbRefs.groupBy { it.repoId }
+
+                val originRefs = git.repository.refDatabase
+                    .getRefsByPrefix("refs/heads/")
+
+                for (ref in originRefs) {
+                    val branch = ref.name.removePrefix("refs/heads/")
+                    val head = headsById[SharedConstants.HACKCLUB_DNS_ID]?.find { it.branch == branch }
+                    val tipHash = ref.objectId.name
+                    if (head == null || tipHash != head.commit) {
+                        // something has changed, leave as fast as possible
+                        throw markerException
+                    }
+                }
+
+                val remoteRefs = git.repository.refDatabase
+                    .getRefsByPrefix("refs/remotes/fork/")
+
+
+                for (ref in remoteRefs) {
+                    val tipHash = ref.objectId.name
+                    val path = ref.name.removePrefix("refs/remotes/fork/").substringAfter('/')
+                    val forkId = path.substringBefore('/').toLongOrNull()
+                    val branch = path.substringAfter('/')
+
+                    if (forkId == null) {
+//                        logger.warn("Illegal fork path $path, skipping")
+                        continue
+                    }
+                    val head = headsById[forkId]?.find { it.branch == branch }
+
+                    if (head == null || tipHash != head.commit) {
+                        // something has changed, leave as fast as possible
+                        throw markerException
+                    }
+                }
+
+                logger.info("No changes detected, skipping this iteration")
+                return
+            } catch (e: Exception) {
+                if (e !== markerException) {
+                    logger.error("Failed to check if the origin has been updated", e)
+                }
+            }
         }
         runIndex()
     }
