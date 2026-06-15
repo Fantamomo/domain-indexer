@@ -5,6 +5,7 @@ import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.db.CommitTable
 import com.fantamomo.hc.dns.db.UserTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
+import com.fantamomo.hc.dns.model.RepoWithBranch
 import com.fantamomo.hc.dns.model.dns.ForkProposal
 import com.fantamomo.hc.dns.model.dns.RecordKey
 import com.fantamomo.hc.dns.model.dns.RecordTimeline
@@ -13,6 +14,8 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.flow.associate
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.alias
 import org.jetbrains.exposed.v1.core.neq
@@ -23,6 +26,11 @@ import org.slf4j.LoggerFactory
 object SlackNotificationService {
 
     private val logger = LoggerFactory.getLogger(SlackNotificationService::class.java)
+
+    private val defaultExtraFields = buildJsonObject {
+        put("unfurl_links", false)
+        put("unfurl_media", false)
+    }
 
     suspend fun sendDnsChangeNotification(
         newRecords: List<RecordTimeline> = emptyList(),
@@ -85,7 +93,7 @@ object SlackNotificationService {
         val totalChanges = newRecords.size + changedRecords.size + removedRecords.size +
                 newForkProposals.size + changedForkProposals.size + closedForkProposals.size
 
-        val payload = buildSlackMessage("DNS Changes") {
+        val payload = buildSlackMessage("DNS Changes", defaultExtraFields) {
             header("DNS Changes – $totalChanges update${if (totalChanges != 1) "s" else ""}")
 
             section(fields = buildList {
@@ -145,7 +153,7 @@ object SlackNotificationService {
 
     private fun RecordTimeline.toNewDiff() = RecordDiff(
         fqdn = key.fqdn,
-        type = key.type.name,
+        type = key.type,
         valueChange = current?.value?.let { ValueChange.Added(it) },
         ttlChange = current?.ttl?.let { FieldChange(it, it) },
         commit = current?.commit,
@@ -157,7 +165,7 @@ object SlackNotificationService {
         val newTtl = (last?.newVersion ?: current)?.ttl
         return RecordDiff(
             fqdn = key.fqdn,
-            type = key.type.name,
+            type = key.type,
             valueChange = buildValueChange(
                 old = last?.oldVersion?.value,
                 new = (last?.newVersion ?: current)?.value,
@@ -171,7 +179,7 @@ object SlackNotificationService {
         val old = timeline.lastOrNull()?.oldVersion ?: current
         return RecordDiff(
             fqdn = key.fqdn,
-            type = key.type.name,
+            type = key.type,
             valueChange = old?.value?.let { ValueChange.Removed(it) },
             ttlChange = old?.ttl?.let { FieldChange(it, it) },
         )
@@ -179,8 +187,8 @@ object SlackNotificationService {
 
     private fun ForkProposal.toNewDiff() = RecordDiff(
         fqdn = key.fqdn,
-        type = key.type.name,
-        repo = "${repository}:${branch}",
+        type = key.type,
+        source = repository.split("/", limit = 2).let { RepoWithBranch(it[0], it[1], branch) },
         valueChange = current?.value?.let { ValueChange.Added(it) },
         ttlChange = current?.ttl?.let { FieldChange(it, it) },
         commit = current?.commit,
@@ -192,8 +200,8 @@ object SlackNotificationService {
         val newTtl = (last?.newVersion ?: current)?.ttl
         return RecordDiff(
             fqdn = key.fqdn,
-            type = key.type.name,
-            repo = "${repository}:${branch}",
+            type = key.type,
+            source = repository.split("/", limit = 2).let { RepoWithBranch(it[0], it[1], branch) },
             valueChange = buildValueChange(
                 old = last?.oldVersion?.value,
                 new = (last?.newVersion ?: current)?.value,
@@ -205,8 +213,8 @@ object SlackNotificationService {
 
     private fun ForkProposal.toClosedDiff() = RecordDiff(
         fqdn = key.fqdn,
-        type = key.type.name,
-        repo = "${repository}:${branch}",
+        type = key.type,
+        source = repository.split("/", limit = 2).let { RepoWithBranch(it[0], it[1], branch) },
         valueChange = current?.value?.let { ValueChange.Removed(it) },
         ttlChange = current?.ttl?.let { FieldChange(it, it) },
         commit = current?.commit,
