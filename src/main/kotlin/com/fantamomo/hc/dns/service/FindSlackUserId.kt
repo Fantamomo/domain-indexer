@@ -1,12 +1,15 @@
 package com.fantamomo.hc.dns.service
 
+import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.util.error.RateLimitedException
 import io.ktor.client.call.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
 import java.net.URI
@@ -102,13 +105,57 @@ object FindSlackUserId {
                 return null
             }
 
-            val uri = URI.create(link)
-            if (uri.host != "github.com") {
-                // maybe the user uses a other service than github
-                logger.info("Found a profile link for slack user $slackId, but it is not a github profile link: $link")
+            var uri = try {
+                URI.create(link)
+            } catch (e: Exception) {
+                // theoretically this can not happen, because slack valid the field, but just in case
+                logger.warn("Link $link found in profile of slack user $slackId is not valid", e)
                 userToGithubUserCache[slackId] = null
                 return null
             }
+
+            if (uri.host != "github.com") {
+
+                logger.info("Found link $link for slack user $slackId, requesting to check if it link to github")
+                val response = try {
+                    SharedConstants.client.get(uri.toURL())
+                } catch (e: Exception) {
+                    logger.warn("Failed to check github profile link $uri", e)
+                    // we are not saving this, because maybe it will work later
+                    return null
+                }
+                if (!response.status.isSuccess()) {
+                    logger.warn("Response returned with ${response.status.value}(${response.status.description}) for url $uri")
+                    userToGithubUserCache[slackId] = null
+                    return null
+                }
+                val url = response.request.url
+                App.scope.launch {
+                    // we a discarding the body,
+                    // because we dont want it,
+                    // but we want to close the connection as fast as possible
+
+                    // we could theoretically load the content and check if it contains a link that redicts to github,
+                    // but due the unlimited possibilities how a site looks and contains it is not safe
+                    // and we are not using it
+                    try {
+                        response.discardRemaining()
+                    } catch (_: Exception) {
+                        // we are logging, but it is effectively irrelevant
+                        logger.warn("Failed to discard body")
+                    }
+                }
+
+                if (url.host != "github.com") {
+                    // no we are discarding the user, because after requesting the link it is still not a github user
+                    logger.info("Found a profile link for slack user $slackId, but it is not a github profile link: $link")
+                    userToGithubUserCache[slackId] = null
+                    return null
+                }
+                // we have requested the link and it redirects to github
+                uri = url.toURI()
+            }
+            // fast path, if the user uses a direct github link we are just using it
             val githubUser = uri.path.removePrefix("/").substringBefore('/')
             if (githubUser.isBlank()) {
                 logger.warn("Invalid github profile link: $link")
