@@ -37,7 +37,12 @@ class SlackMessageBuilder {
 
     private fun overflow() = blocks.size >= BLOCK_LIMIT - 2
 
-    fun build(altText: String = "Notification"): JsonObject = buildJsonObject {
+    fun build(altText: String = "Notification", customData: JsonObject?): JsonObject = buildJsonObject {
+        if (customData != null) {
+            for ((key, value) in customData) {
+                put(key, value)
+            }
+        }
 //        put("text", altText)
         put("blocks", JsonArray(blocks.map { it.toJson() }))
     }
@@ -111,8 +116,8 @@ class RichSectionBuilder {
 
     fun strikeCode(text: String) = text(text, code = true, strike = true)
 
-    fun link(url: String, label: String? = null, bold: Boolean = false) =
-        elements.add(LinkElement(url, label, bold))
+    fun link(url: String, label: String? = null, bold: Boolean = false, italic: Boolean = false, strike: Boolean = false, code: Boolean = false) =
+        elements.add(LinkElement(url, label, bold, italic, strike, code))
 
     fun user(userId: String) = elements.add(UserElement(userId))
 
@@ -125,5 +130,5 @@ class RichSectionBuilder {
     fun build() = elements
 }
 
-fun buildSlackMessage(altText: String = "Notification", init: SlackMessageBuilder.() -> Unit): JsonObject =
-    SlackMessageBuilder().apply(init).build(altText)
+fun buildSlackMessage(altText: String = "Notification", customData: JsonObject? = null, init: SlackMessageBuilder.() -> Unit): JsonObject =
+    SlackMessageBuilder().apply(init).build(altText, customData)
