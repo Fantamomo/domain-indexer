@@ -122,9 +122,6 @@ object SlackNotificationService {
         post(webhookUrl, payload)
     }
 
-    suspend fun sendNewRecordsNotification(newRecords: List<RecordTimeline>) =
-        sendDnsChangeNotification(newRecords = newRecords)
-
     private suspend fun post(webhookUrl: String, payload: kotlinx.serialization.json.JsonObject) {
         runCatching {
             val response = SharedConstants.client.post(webhookUrl) {
