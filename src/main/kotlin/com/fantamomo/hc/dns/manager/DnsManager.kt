@@ -11,6 +11,7 @@ import com.fantamomo.hc.dns.util.DnsIndexer
 import com.fantamomo.hc.dns.util.DnsParser
 import com.fantamomo.hc.dns.util.RepositoriesToIgnore
 import com.fantamomo.hc.dns.util.yaml.YamlParser
+import kotlinx.coroutines.flow.associate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import org.eclipse.jgit.revwalk.RevCommit
@@ -287,19 +288,13 @@ object DnsManager {
     }
 
     private suspend fun loadRepoIdMap(): Map<Long, String> {
-        val result = mutableMapOf<Long, String>()
-        DatabaseManager.transaction {
-            val idToName = UserTable.select(UserTable.id, UserTable.username)
-                .map { it[UserTable.id] to it[UserTable.username] }
-                .toList()
-                .toMap()
-
-            ForkTable.select(ForkTable.id, ForkTable.userId, ForkTable.name)
-                .collect {
-                    result[it[ForkTable.id]] =
-                        "${idToName[it[ForkTable.userId]]}/${it[ForkTable.name]}"
+        return DatabaseManager.transaction {
+            (ForkTable innerJoin UserTable)
+                .select(ForkTable.id, UserTable.username, ForkTable.name)
+                .associate {
+                    it[ForkTable.id] to
+                            "${it[UserTable.username]}/${it[ForkTable.name]}"
                 }
         }
-        return result
     }
 }
