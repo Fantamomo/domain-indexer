@@ -115,10 +115,10 @@ object FindMissingSlackUsersInitTask : InitTask(
             val now = Clock.System.now()
             val nextAllowedRequestTime = lastRequestTime + 6.seconds
 
-
             if (now < nextAllowedRequestTime) {
                 delay(nextAllowedRequestTime - now)
             }
+
             lastRequestTime = Clock.System.now()
             return FindSlackUserId.find(username)
         }

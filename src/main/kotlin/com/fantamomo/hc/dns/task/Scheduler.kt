@@ -3,38 +3,39 @@ package com.fantamomo.hc.dns.task
 import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.data.SharedValues
-import com.fantamomo.hc.dns.db.ForkProposalTable
-import com.fantamomo.hc.dns.db.ForkProposalTimelineTable
-import com.fantamomo.hc.dns.db.RecordTable
-import com.fantamomo.hc.dns.db.RecordTimelineTable
+import com.fantamomo.hc.dns.data.SharedValues.git
+import com.fantamomo.hc.dns.db.*
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.manager.DnsManager
+import com.fantamomo.hc.dns.model.Head
+import com.fantamomo.hc.dns.model.SlackUserIdFoundState
 import com.fantamomo.hc.dns.model.dns.*
-import com.fantamomo.hc.dns.service.GetForksService
-import com.fantamomo.hc.dns.service.SyncCommitService
-import com.fantamomo.hc.dns.service.SyncForksService
-import com.fantamomo.hc.dns.service.UserService
+import com.fantamomo.hc.dns.service.*
 import com.fantamomo.hc.dns.task.init.GetForksInitTask
 import com.fantamomo.hc.dns.util.SlackNotificationService
 import com.fantamomo.hc.dns.util.humanReadable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.r2dbc.batchUpsert
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
+import org.jetbrains.exposed.v1.r2dbc.update
 import org.slf4j.LoggerFactory
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
 import kotlin.time.measureTimedValue
 
 object Scheduler {
-    private val TIME_BETWEEN_RUNS = 3.minutes
+    private val TIME_BETWEEN_RUNS = 1.minutes
 
     private val logger = LoggerFactory.getLogger(Scheduler::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
@@ -44,6 +45,8 @@ object Scheduler {
 
     private val scope = CoroutineScope(App.scope.coroutineContext + job + exceptionHandler)
     private val running = AtomicBoolean(false)
+
+    private val markerException = Exception("Marker exception for internal use, should never be printed to the logs")
 
     suspend fun start() {
         if (!running.compareAndSet(expectedValue = false, newValue = true)) {
@@ -155,17 +158,72 @@ object Scheduler {
                 logger.error("Unexpected exception while syncing forks", e)
             }
         }
-        try {
-            val newCommits = SyncCommitService.sync()
-            if (!newCommits) {
-                // no new commits -> no need to reindex
-                logger.info("No new commits, skipping this iteration")
-                return
-            }
+        val newCommits = try {
+            SyncCommitService.sync()
         } catch (e: Exception) {
             logger.error("Unexpected exception while syncing commits", e)
             // sadly if the sync fails, we need to stop the iteration, because the commits need to be in the db for later actions
             throw e
+        }
+        if (!newCommits) {
+            // if there are no new commits, it could still be possible that the records have changed (due git fast-forward or any other reason)
+            try {
+                val dbRefs = DatabaseManager.transaction {
+                    HeadTable.selectAll()
+                        .map { Head(it[HeadTable.repoId], it[HeadTable.branch], it[HeadTable.commit]) }
+                        .toList()
+                }
+                if (dbRefs.size != git.repository.refDatabase.refs.size) {
+                    // fast path, if the ref's size has changed, we jump directly to the index task,
+                    logger.info("The refs size has changed, starting the index task")
+                    throw markerException
+                }
+                // slow path, maybe a head of a branch has been updated, or a branch was added and another removed,
+                // so we check every head from the db with the real refs
+                val headsById = dbRefs.groupBy { it.repoId }
+
+                val originRefs = git.repository.refDatabase
+                    .getRefsByPrefix("refs/heads/")
+
+                for (ref in originRefs) {
+                    val branch = ref.name.removePrefix("refs/heads/")
+                    val head = headsById[SharedConstants.HACKCLUB_DNS_ID]?.find { it.branch == branch }
+                    val tipHash = ref.objectId.name
+                    if (head == null || tipHash != head.commit) {
+                        // something has changed, leave as fast as possible
+                        throw markerException
+                    }
+                }
+
+                val remoteRefs = git.repository.refDatabase
+                    .getRefsByPrefix("refs/remotes/fork/")
+
+
+                for (ref in remoteRefs) {
+                    val tipHash = ref.objectId.name
+                    val path = ref.name.removePrefix("refs/remotes/fork/").substringAfter('/')
+                    val forkId = path.substringBefore('/').toLongOrNull()
+                    val branch = path.substringAfter('/')
+
+                    if (forkId == null) {
+//                        logger.warn("Illegal fork path $path, skipping")
+                        continue
+                    }
+                    val head = headsById[forkId]?.find { it.branch == branch }
+
+                    if (head == null || tipHash != head.commit) {
+                        // something has changed, leave as fast as possible
+                        throw markerException
+                    }
+                }
+
+                logger.info("No changes detected, skipping this iteration")
+                return
+            } catch (e: Exception) {
+                if (e !== markerException) {
+                    logger.error("Failed to check if the origin has been updated", e)
+                }
+            }
         }
         runIndex()
     }
@@ -256,9 +314,116 @@ object Scheduler {
                     changedForkProposals.isNotEmpty() ||
                     closedForkProposals.isNotEmpty()
 
-        /*if (hasAnyChange && firstRun) {
-            logger.warn("This is the first run, skipping Slack notification")
-        } else */if (hasAnyChange) {
+        if (hasAnyChange) {
+
+            val allCommitIds = newRecords.mapNotNull { it.current?.commit ?: it.timeline.lastOrNull()?.commit } +
+                    removedRecords.mapNotNull { it.timeline.lastOrNull()?.commit } +
+                    changedRecords.mapNotNull { it.current?.commit ?: it.timeline.lastOrNull()?.commit } +
+                    newForkProposals.mapNotNull { it.current?.commit ?: it.timeline.lastOrNull()?.commit } +
+                    changedForkProposals.mapNotNull { it.current?.commit ?: it.timeline.lastOrNull()?.commit } +
+                    closedForkProposals.mapNotNull { it.timeline.lastOrNull()?.commit }
+                        .distinct()
+
+            val authorUserAlias = UserTable.alias("author_user")
+            val commiterUserAlias = UserTable.alias("commiter_user")
+
+            val usersWithUnknownSlackId = try {
+                DatabaseManager.transaction {
+                    CommitTable
+                        .join(
+                            authorUserAlias,
+                            JoinType.LEFT,
+                            CommitTable.author,
+                            authorUserAlias[UserTable.id]
+                        )
+                        .join(
+                            commiterUserAlias,
+                            JoinType.LEFT,
+                            CommitTable.commiter,
+                            commiterUserAlias[UserTable.id]
+                        )
+                        .select(
+                            // author
+                            authorUserAlias[UserTable.id],
+                            authorUserAlias[UserTable.username],
+
+                            // commiter
+                            commiterUserAlias[UserTable.id],
+                            commiterUserAlias[UserTable.username],
+                        )
+                        .where {
+                            (CommitTable.id inList allCommitIds) and
+                                    ((authorUserAlias[UserTable.slackIdState] eq SlackUserIdFoundState.UNKNOWN) or
+                                            (commiterUserAlias[UserTable.slackIdState] eq SlackUserIdFoundState.UNKNOWN))
+                        }
+                        .mapNotNull { row ->
+                            listOf(
+                                row[authorUserAlias[UserTable.id]] to row[authorUserAlias[UserTable.username]],
+                                row[commiterUserAlias[UserTable.id]] to row[commiterUserAlias[UserTable.username]],
+                            )
+                        }
+                        .toList()
+                        .flatten()
+                        .distinct()
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to request all users in new/changed/removed records without slack id", e)
+                emptyList()
+            }
+
+            if (usersWithUnknownSlackId.isNotEmpty()) {
+                // if we have new commits contains author and/or commiter that have not been connected with a slack id yet
+                // that means the FindMissingSlackUsersInitTask is still running
+                // so we are prioritizing them to find their slack id faster because we want to send the notification with the user mention
+                logger.info("Found ${usersWithUnknownSlackId.size} users associated with these new commits without slack id, prioritization them")
+
+                var shouldStop = false
+
+                val job = scope.launch {
+                    for ((id, username) in usersWithUnknownSlackId) {
+                        if (shouldStop) {
+                            logger.info("Stopping the resolving of prioritized users, because the job has been stopped")
+                            break
+                        }
+                        val userId = try {
+                            withTimeout(10.seconds) {
+                                // it should not take more than 10 seconds to find the slack id,
+                                // if so, then most likely something has gone wrong
+                                FindSlackUserId.find(username)
+                            }
+                        } catch (e: Exception) {
+                            logger.warn("Failed to find slack id for prioritized user $username", e)
+                            continue
+                        }
+                        if (userId == null) {
+                            logger.warn("Failed to find slack id for prioritized user $username")
+                            continue
+                        }
+                        try {
+                            DatabaseManager.transaction {
+                                UserTable.update({ UserTable.id eq id }) {
+                                    it[UserTable.slackId] = userId
+                                    it[UserTable.slackIdState] = SlackUserIdFoundState.FOUND
+                                }
+                            }
+                        } catch (e: Exception) {
+                            logger.warn("Failed to update slack id for prioritized user $username", e)
+                            continue
+                        }
+                    }
+                }
+                // we are waiting a maximum of 1 minute for the job to finish,
+                // if it takes too long, we just send the notification anyway,
+                // but let the last iteration finish, so that the requests are not for nothing
+                withTimeoutOrNull(1.minutes) {
+                    job.join()
+                }
+                shouldStop = true
+                if (job.isActive) {
+                    logger.warn("Requesting the missing slack ids for the new commits took too long, sending the notification anyway")
+                }
+            }
+
             logger.info("Changes detected, sending Slack notification")
             SlackNotificationService.sendDnsChangeNotification(
                 newRecords = newRecords,

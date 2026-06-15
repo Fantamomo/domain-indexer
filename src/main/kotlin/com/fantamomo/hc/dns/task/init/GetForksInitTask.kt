@@ -21,6 +21,7 @@ object GetForksInitTask : InitTask(
     override suspend fun run() {
         logger.info("Fetching forks")
         var timeoutErrors = 0
+        var retried = false
         val (respond, duration) = measureTimedValue {
             while (true) {
                 try {
@@ -38,6 +39,7 @@ object GetForksInitTask : InitTask(
                     logger.warn("Request timed out, retrying in 10 seconds")
                     timeoutErrors++
                     delay(10.seconds)
+                    retried = true
                     logger.info("Retrying...")
                 } catch (e: Exception) {
                     logger.error("Unexpected exception while fetching forks", e)
@@ -49,6 +51,7 @@ object GetForksInitTask : InitTask(
             @Suppress("KotlinUnreachableCode")
             throw IllegalStateException("Unreachable")
         }
+        if (retried) logger.info("Successfully retried fetching forks")
         when (respond.status) {
             GetForksService.Status.NOT_MODIFIED -> {
                 logger.warn("Forks not modified since last fetch. That shouldn't be a fetch before this call. Maybe an scheduled has been miss configured?")

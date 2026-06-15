@@ -152,14 +152,8 @@ object InitDatabaseTablesTask : InitTask(
         val results = mutableListOf<String>()
         val resources = javaClass.classLoader.getResources(MIGRATION_FOLDER_PATH)
 
-        logger.info(
-            "folder = ${javaClass.classLoader.getResource("db/migration")}"
-        )
-
         while (resources.hasMoreElements()) {
             val url = resources.nextElement()
-
-            logger.info("Found migration file: $url")
 
             if (url.protocol == "jar") {
                 // we are in a jar file
@@ -187,6 +181,8 @@ object InitDatabaseTablesTask : InitTask(
                         }
                     }
                 }
+            } else {
+                logger.warn("Unsupported protocol: ${url.protocol} in $url")
             }
         }
 

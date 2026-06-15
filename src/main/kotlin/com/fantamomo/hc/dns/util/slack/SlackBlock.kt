@@ -92,15 +92,7 @@ data class TextElement(
     override fun toJson() = buildJsonObject {
         put("type", "text")
         put("text", text)
-        val hasStyle = bold || italic || strike || code
-        if (hasStyle) {
-            put("style", buildJsonObject {
-                if (bold) put("bold", true)
-                if (italic) put("italic", true)
-                if (strike) put("strike", true)
-                if (code) put("code", true)
-            })
-        }
+        putStyle(bold, italic, strike, code)
     }
 }
 
@@ -109,18 +101,14 @@ data class LinkElement(
     val text: String? = null,
     val bold: Boolean = false,
     val italic: Boolean = false,
+    val strike: Boolean = false,
+    val code: Boolean = false,
 ) : RichElement {
     override fun toJson() = buildJsonObject {
         put("type", "link")
         put("url", url)
         text?.let { put("text", it) }
-        val hasStyle = bold || italic
-        if (hasStyle) {
-            put("style", buildJsonObject {
-                if (bold) put("bold", true)
-                if (italic) put("italic", true)
-            })
-        }
+        putStyle(bold, italic, strike, code)
     }
 }
 
