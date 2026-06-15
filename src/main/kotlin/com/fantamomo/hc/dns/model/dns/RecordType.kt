@@ -5,5 +5,7 @@ enum class RecordType {
     AAAA,
     CNAME,
     ALIAS,
-    TXT
+    TXT;
+
+    fun isNamedRecordALink() = this == CNAME || this == ALIAS || this == A || this == AAAA
 }
