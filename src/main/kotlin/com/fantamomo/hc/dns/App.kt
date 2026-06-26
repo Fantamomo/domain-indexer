@@ -7,7 +7,8 @@ import com.fantamomo.hc.dns.task.Scheduler
 import com.fantamomo.hc.dns.task.init.*
 import com.fantamomo.hc.dns.util.humanReadable
 import io.ktor.server.application.*
-import io.ktor.server.engine.*
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
