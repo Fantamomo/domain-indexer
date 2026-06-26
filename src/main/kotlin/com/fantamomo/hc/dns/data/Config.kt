@@ -30,6 +30,12 @@ object Config {
         description = "The host/interface the server should bind to."
     )
 
+    val MESSAGE_HOST by string(
+        key = "message.host",
+        default = "localhost",
+        description = "The host we should use in messages, so that the links work"
+    )
+
     val REPO_DIR: Path by path(
         key = "repo.dir",
         default = Path("./dns"),

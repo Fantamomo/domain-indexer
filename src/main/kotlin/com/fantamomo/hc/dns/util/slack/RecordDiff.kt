@@ -1,5 +1,6 @@
 package com.fantamomo.hc.dns.util.slack
 
+import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.model.RepoWithBranch
 import com.fantamomo.hc.dns.model.dns.RecordType
 
@@ -10,6 +11,7 @@ data class RecordDiff(
     val valueChange: ValueChange? = null,
     val ttlChange: FieldChange<Int>? = null,
     val commit: String? = null,
+    val previewLink: Boolean = false,
 )
 
 sealed interface ValueChange {
@@ -23,13 +25,18 @@ data class FieldChange<T>(val old: T, val new: T) {
     val changed get() = old != new
 }
 
+@Suppress("HttpUrlsUsage")
 fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String, Pair<String?, String?>>) {
     newline()
     bold("Name: ")
     if (diff.type.isNamedRecordALink()) {
 
-        @Suppress("HttpUrlsUsage")
         link("http://${diff.fqdn}", diff.fqdn.cap(120))
+        if (diff.previewLink) {
+            text(" (")
+            link("http://${Config.MESSAGE_HOST}/preview/${diff.fqdn}", "preview")
+            text(")")
+        }
 
         newline()
     } else {
@@ -55,6 +62,7 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
             text("  →  ")
             code(vc.new.cap(80))
         }
+
         is ValueChange.Unchanged -> code(vc.value.cap(120))
         null -> text("—")
     }

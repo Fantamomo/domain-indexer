@@ -192,6 +192,7 @@ object SlackNotificationService {
         valueChange = current?.value?.let { ValueChange.Added(it) },
         ttlChange = current?.ttl?.let { FieldChange(it, it) },
         commit = current?.commit,
+        previewLink = true,
     )
 
     private fun ForkProposal.toChangedDiff(): RecordDiff {
@@ -208,6 +209,7 @@ object SlackNotificationService {
             ),
             ttlChange = if (oldTtl != null && newTtl != null) FieldChange(oldTtl, newTtl) else null,
             commit = last?.commit ?: current?.commit,
+            previewLink = true,
         )
     }
 
@@ -218,6 +220,7 @@ object SlackNotificationService {
         valueChange = current?.value?.let { ValueChange.Removed(it) },
         ttlChange = current?.ttl?.let { FieldChange(it, it) },
         commit = current?.commit,
+        previewLink = true
     )
 
     private fun buildValueChange(old: String?, new: String?): ValueChange? = when {
