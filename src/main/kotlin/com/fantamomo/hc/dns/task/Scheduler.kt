@@ -7,6 +7,7 @@ import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.*
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.manager.DnsManager
+import com.fantamomo.hc.dns.manager.HostNameCache
 import com.fantamomo.hc.dns.model.Head
 import com.fantamomo.hc.dns.model.SlackUserIdFoundState
 import com.fantamomo.hc.dns.model.dns.*
@@ -423,6 +424,8 @@ object Scheduler {
                     logger.warn("Requesting the missing slack ids for the new commits took too long, sending the notification anyway")
                 }
             }
+
+            HostNameCache.invalidAll()
 
             logger.info("Changes detected, sending Slack notification")
             SlackNotificationService.sendDnsChangeNotification(
