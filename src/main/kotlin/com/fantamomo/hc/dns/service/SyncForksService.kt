@@ -275,6 +275,7 @@ object SyncForksService {
 
                 if (fetchedSuccessfully.isNotEmpty()) {
                     try {
+                        UserService.updateUsers(fetchedSuccessfully.map { it.user })
                         saveForksToDb(fetchedSuccessfully)
 
                         logger.info(
