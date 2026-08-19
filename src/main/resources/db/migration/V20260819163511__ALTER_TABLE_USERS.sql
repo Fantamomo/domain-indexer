@@ -1,0 +1,1 @@
+ALTER TABLE users ADD slack_id_state_last_requested TIMESTAMP NULL;
