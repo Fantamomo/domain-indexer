@@ -12,18 +12,18 @@ import com.fantamomo.hc.dns.util.humanReadable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import org.jetbrains.exposed.v1.core.and
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.core.inList
-import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.update
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -46,7 +46,12 @@ object FindMissingSlackUsersInitTask : InitTask(
         // we are running this task in parallel, because it will take a while to complete
         // and we dont want to block the scheduler from starting
         App.scope.launch {
-            findMissingSlackIds()
+            while (isActive) {
+                findMissingSlackIds()
+                // after two hours we just run it again, maybe there are users where we should try again
+                // (sure, it could be optimized, but I can't be bothered right now)
+                delay(2.hours)
+            }
         }
     }
 
@@ -82,9 +87,21 @@ object FindMissingSlackUsersInitTask : InitTask(
             }
         }
 
+        val tryAgainTime = Clock.System.now() - 3.days
+
+        // so in short we get all users where one of the following is true:
+        // 1. there slackIdState is UNKNOWN
+        // 2. there slackIdState is NOT_FOUND and the last time it was requested ...
+        //   - is null or
+        //   - was more than 1 day ago
         val missingUsers = DatabaseManager.transaction {
             UserTable.select(UserTable.id, UserTable.username, UserTable.slackIdState)
-                .where { UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN }
+                .where {
+                    (UserTable.slackIdState eq SlackUserIdFoundState.UNKNOWN) or
+                            ((UserTable.slackIdState eq SlackUserIdFoundState.NOT_FOUND) and
+                                    (UserTable.slackIdStateLastRequested.isNull() or
+                                            (UserTable.slackIdStateLastRequested lessEq tryAgainTime)))
+                }
                 .map { Pair(it[UserTable.id], it[UserTable.username]) }
                 .toList()
         }
@@ -189,6 +206,9 @@ object FindMissingSlackUsersInitTask : InitTask(
             UserTable.update({ UserTable.id eq id }) {
                 it[UserTable.slackId] = slackId
                 it[UserTable.slackIdState] = state
+
+                // maybe we should not update slackIdStateLastRequested every time, but I couldn't think of a case where it would be a problem
+                it[UserTable.slackIdStateLastRequested] = Clock.System.now()
             }
         }
     } catch (e: Exception) {
