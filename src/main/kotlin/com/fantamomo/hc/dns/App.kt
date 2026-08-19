@@ -7,8 +7,7 @@ import com.fantamomo.hc.dns.task.Scheduler
 import com.fantamomo.hc.dns.task.init.*
 import com.fantamomo.hc.dns.util.humanReadable
 import io.ktor.server.application.*
-import io.ktor.server.engine.EmbeddedServer
-import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
@@ -63,10 +62,6 @@ object App {
     }
 
     private suspend fun startServer(): Unit = coroutineScope {
-        // currently we dont have exactly something to show on the server so we will just skip creating the server
-        @Suppress("ConstantConditionIf")
-        if (true) return@coroutineScope
-
         logger.info("Creating server on ${Config.HOST}:${Config.PORT}")
         server = embeddedServer(
             Netty,
