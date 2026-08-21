@@ -34,7 +34,7 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
         link("http://${diff.fqdn}", diff.fqdn.cap(120))
         if (diff.previewLink) {
             text(" (")
-            link("http://${Config.MESSAGE_HOST}/preview/${diff.fqdn}", "preview")
+            link("http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/${diff.fqdn}", "preview")
             text(")")
         }
 
