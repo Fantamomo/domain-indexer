@@ -36,6 +36,12 @@ object Config {
         description = "The host we should use in messages, so that the links work"
     )
 
+    val SECURE_MESSAGE_HOST by boolean(
+        key = "message.host.secure",
+        default = false,
+        description = "Whether the message.host is behind HTTPS (through a reverse proxy)"
+    )
+
     val REPO_DIR: Path by path(
         key = "repo.dir",
         default = Path("./dns"),
