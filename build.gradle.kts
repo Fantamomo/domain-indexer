@@ -40,6 +40,7 @@ dependencies {
     implementation(ktorLibs.client.core)
     implementation(ktorLibs.client.okhttp)
     implementation(ktorLibs.client.contentNegotiation)
+    implementation(ktorLibs.client.encoding)
 
     // exposed/db
     implementation(libs.exposed.core)

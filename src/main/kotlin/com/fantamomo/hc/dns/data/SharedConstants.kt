@@ -3,6 +3,7 @@ package com.fantamomo.hc.dns.data
 import com.fantamomo.hc.dns.util.GitHubHelperKtorPlugin
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.compression.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.datetime.LocalDateTime
@@ -33,6 +34,14 @@ object SharedConstants {
     val proxyClient by lazy {
         HttpClient(OkHttp) {
             followRedirects = false
+
+            install(ContentEncoding) {
+                gzip()
+                deflate()
+                identity()
+
+                mode = ContentEncodingConfig.Mode.DecompressResponse
+            }
         }
     }
     // that is the internal github id of the hackclub/dns repo
