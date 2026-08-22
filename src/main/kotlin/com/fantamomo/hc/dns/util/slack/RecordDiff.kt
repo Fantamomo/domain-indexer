@@ -19,6 +19,14 @@ sealed interface ValueChange {
     data class Removed(val value: String) : ValueChange
     data class Modified(val old: String, val new: String) : ValueChange
     data class Unchanged(val value: String) : ValueChange
+
+    val currentValue: String?
+        get() = when (this) {
+            is Added -> value
+            is Removed -> null
+            is Modified -> new
+            is Unchanged -> value
+        }
 }
 
 data class FieldChange<T>(val old: T, val new: T) {
@@ -33,8 +41,11 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
 
         link("http://${diff.fqdn}", diff.fqdn.cap(120))
         if (diff.previewLink) {
+            val hostSegment = diff.fqdn + (diff.valueChange?.currentValue?.let { "+$it" } ?: "")
+            val previewUrl = "http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/$hostSegment"
+
             text(" (")
-            link("http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/${diff.fqdn}", "preview")
+            link(previewUrl, "preview")
             text(")")
         }
 

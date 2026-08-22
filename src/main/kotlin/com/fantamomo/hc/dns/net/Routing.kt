@@ -57,15 +57,28 @@ fun Application.configureRouting() {
                     call.respondText("Missing host parameter", status = HttpStatusCode.BadRequest)
                     return@handle
                 }
+                val hostParts = hostParameter.split("+")
+                if (hostParts.size !in 1..2) {
+                    call.respondText("Invalid host parameter", status = HttpStatusCode.BadRequest)
+                    return@handle
+                }
+                val rawHostName = hostParts.first()
+                val targetAddress = hostParts.getOrNull(1)
                 val hostName = try {
-                    Hostname(hostParameter)
+                    Hostname(rawHostName)
                 } catch (_: Exception) {
                     call.respondText("Invalid host parameter", status = HttpStatusCode.BadRequest)
                     return@handle
                 }
-                val resolvedHostName = HostNameCache.find(hostName)
+                val resolvedHostName = HostNameCache.find(hostName, targetAddress)
                 if (resolvedHostName == null) {
-                    call.respondText("Host not found", status = HttpStatusCode.NotFound)
+                    call.respondText(
+                        "Host not found" +
+                                if (targetAddress != null)
+                                    " or the expected target address ($targetAddress) has not been found under this host"
+                                else "",
+                        status = HttpStatusCode.NotFound
+                    )
                     return@handle
                 }
 
