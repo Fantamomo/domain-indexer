@@ -32,6 +32,7 @@ object SharedConstants {
 
     val proxyClient by lazy {
         HttpClient(OkHttp) {
+            followRedirects = false
         }
     }
     // that is the internal github id of the hackclub/dns repo
