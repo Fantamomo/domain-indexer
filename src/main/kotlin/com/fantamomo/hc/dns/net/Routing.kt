@@ -5,7 +5,6 @@ import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.manager.HostNameCache
 import com.fantamomo.hc.dns.model.Hostname
 import com.fantamomo.hc.dns.util.HtmlProxyRewriter
-import com.ucasoft.ktor.simpleCache.cacheOutput
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -14,7 +13,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.utils.io.*
-import kotlin.time.Duration.Companion.minutes
+import org.slf4j.LoggerFactory
 
 private val hopByHopHeaders = setOf(
     HttpHeaders.Connection,
@@ -36,143 +35,174 @@ private val headersToIgnoreByReceiving = hopByHopHeaders + setOf(
     HttpHeaders.ContentLength.lowercase(),
 )
 
+private val routingLogger = LoggerFactory.getLogger("Routing")
+
 fun Application.configureRouting() {
     routing {
-        cacheOutput(1.minutes) {
-            get("/") {
-                call.respondText(
-                    "Hi, nice to meet you!\n" +
-                            "Sadly, here is nothing to see for you.\n" +
-                            "I would recommend you to look somewhere else.\n" +
-                            "Bye!"
-                )
-            }
+//        cacheOutput(1.minutes) {
+        get("/") {
+            call.respondText(
+                "Hi, nice to meet you!\n" +
+                        "Sadly, here is nothing to see for you.\n" +
+                        "I would recommend you to look somewhere else.\n" +
+                        "Bye!"
+            )
+//        }
         }
 
-        get("/preview/{host}/{path...}") {
-            val hostParameter = call.pathParameters["host"]
-            if (hostParameter == null) {
-                call.respondText("Missing host parameter", status = HttpStatusCode.BadRequest)
-                return@get
-            }
-            val hostName = try {
-                Hostname(hostParameter)
-            } catch (_: Exception) {
-                call.respondText("Invalid host parameter", status = HttpStatusCode.BadRequest)
-                return@get
-            }
-            val resolvedHostName = HostNameCache.find(hostName)
-            if (resolvedHostName == null) {
-                call.respondText("Host not found", status = HttpStatusCode.NotFound)
-                return@get
-            }
+        route("/preview/{host}/{path...}") {
+            handle {
+                val hostParameter = call.pathParameters["host"]
+                if (hostParameter == null) {
+                    call.respondText("Missing host parameter", status = HttpStatusCode.BadRequest)
+                    return@handle
+                }
+                val hostName = try {
+                    Hostname(hostParameter)
+                } catch (_: Exception) {
+                    call.respondText("Invalid host parameter", status = HttpStatusCode.BadRequest)
+                    return@handle
+                }
+                val resolvedHostName = HostNameCache.find(hostName)
+                if (resolvedHostName == null) {
+                    call.respondText("Host not found", status = HttpStatusCode.NotFound)
+                    return@handle
+                }
 
-            val path = call.pathParameters["path"] ?: ""
+                val path = call.pathParameters["path"] ?: ""
 
-            val response = try {
-                SharedConstants.proxyClient.get {
-                    url {
-                        // just copy the complete uri from the request
-                        takeFrom(call.request.uri)
+                val upstreamUrl = buildUrl {
+                    // just copy the complete uri from the request
+                    takeFrom(call.request.uri)
 
-                        // then override the protocol to HTTP
-                        // (because we cannot be sure that the upstream server uses HTTPS,
-                        // and if he doesn't the request will fail, but if we using HTTP and
-                        // the server supports HTTPS it automatically redirects to HTTPS)
-                        protocol = URLProtocol.HTTP
+                    // then override the protocol to HTTP
+                    // (because we cannot be sure that the upstream server uses HTTPS,
+                    // and if he doesn't the request will fail, but if we using HTTP and
+                    // the server supports HTTPS it automatically redirects to HTTPS)
+                    protocol = URLProtocol.HTTP
 
-                        // then override the path to the path from the request
-                        encodedPath = path
+                    // then override the path to the path from the request
+                    encodedPath = path
 
-                        // then override the host to the resolved host name
-                        host = resolvedHostName
-                    }
-                    call.request.headers.forEach { name, value ->
-                        if (name.lowercase() !in headersToIgnoreBySending) {
-                            header(name, value.first())
+                    // then override the host to the resolved host name
+                    host = resolvedHostName
+                }
+
+//                routingLogger.info("${call.request.httpMethod} ${call.request.uri} -> $upstreamUrl")
+
+                val response = try {
+                    SharedConstants.proxyClient.request {
+                        method = call.request.httpMethod
+
+                        url(upstreamUrl)
+
+                        call.request.headers.forEach { name, value ->
+                            if (name.lowercase() !in headersToIgnoreBySending) {
+                                header(name, value.first())
+                            }
+                        }
+                        header(HttpHeaders.Host, hostName.value)
+                        header("SNI", hostName.value)
+
+                        header(HttpHeaders.AcceptEncoding, "identity")
+
+                        // stream the body of the call to the upstream host
+                        // dont do it by Get or Head because those two methods dont have a body
+                        if (call.request.httpMethod != HttpMethod.Get &&
+                            call.request.httpMethod != HttpMethod.Head
+                        ) {
+                            setBody(call.receiveChannel())
                         }
                     }
-                    header(HttpHeaders.Host, hostName.value)
-                    header("SNI", hostName.value)
-
-                    header(HttpHeaders.AcceptEncoding, "identity")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    call.respondText("Unable to reach upstream host ${hostName.value} via $resolvedHostName")
+                    return@handle
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                call.respondText("Unable to reach upstream host $hostName via $resolvedHostName")
-                return@get
-            }
 
-            response.headers.forEach { name, values ->
-                val lowercase = name.lowercase()
+//                routingLogger.info(
+//                    "Remote ${call.request.httpMethod} $upstreamUrl -> [${response.status}] " +
+//                            "Content-Type=${response.contentType()}"
+//                )
 
-                if (lowercase == HttpHeaders.Location.lowercase()) {
-                    for (value in values) {
-                        val location = parseUrl(value)
-                        if (location == null) {
-                            // if it is not a valid url, we are just passing it through
-                            call.response.headers.append(name, value)
-                            continue
+                response.headers.forEach { name, values ->
+                    val lowercase = name.lowercase()
+
+                    if (lowercase == HttpHeaders.Location.lowercase()) {
+                        for (value in values) {
+                            val location = parseUrl(value)
+                            if (location == null) {
+                                // if it is not a valid url, we are just passing it through
+                                call.response.headers.append(name, value)
+                                continue
+                            }
+
+                            if (location.host != hostName.value && location.host != hostParameter && location.host != hostName.fqdn) {
+                                // seams like the server is redirecting to a complete different site, so we are just passing it through
+                                call.response.headers.append(name, value)
+                            } else {
+                                // valid url and it points to the same server, so we just rewrite it to this proxy
+                                val rewrittenLocation = rewriteLocation(
+                                    location,
+                                    Config.MESSAGE_HOST,
+                                    Config.SECURE_MESSAGE_HOST,
+                                    hostParameter
+                                )
+                                call.response.headers.append(name, rewrittenLocation.toString())
+                            }
                         }
+//                        routingLogger.info(
+//                            "Remote ${call.request.httpMethod} $upstreamUrl -> Got Location: ${
+//                                values.joinToString(
+//                                    ", "
+//                                )
+//                            } | Rewritten to: ${call.response.headers.values(name).joinToString(", ")}"
+//                        )
 
-                        if (location.host != hostName.value && location.host != hostParameter && location.host != hostName.fqdn) {
-                            // seams like the server is redirecting to a complete different site, so we are just passing it through
-                            call.response.headers.append(name, value)
-                        } else {
-                            // valid url and it points to the same server, so we just rewrite it to this proxy
-                            val rewrittenLocation = rewriteLocation(
-                                location,
-                                Config.MESSAGE_HOST,
-                                Config.SECURE_MESSAGE_HOST,
-                                hostParameter
-                            )
-                            call.response.headers.append(name, rewrittenLocation.toString())
-                        }
+                        return@forEach
                     }
 
-                    return@forEach
+                    if (lowercase in headersToIgnoreByReceiving) {
+                        return@forEach
+                    }
+
+                    // forward all values of a header
+                    values.forEach { value ->
+                        call.response.headers.append(name, value)
+                    }
+                }
+                if (response.contentType()?.withoutParameters() == ContentType.Text.Html) {
+                    val html = response.bodyAsText()
+                    val url = buildUrl {
+                        takeFrom(response.request.url)
+                        host = hostParameter
+                    }
+
+                    val proxyBaseUrl =
+                        "http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/$hostParameter"
+
+                    val transformedHtml = HtmlProxyRewriter.rewrite(
+                        html,
+                        url.toString(),
+                        proxyBaseUrl
+                    )
+                    call.respondText(
+                        transformedHtml,
+                        contentType = ContentType.Text.Html,
+                        status = response.status
+                    )
+                    return@handle
                 }
 
-                if (lowercase in headersToIgnoreByReceiving) {
-                    return@forEach
-                }
-
-                // forward all values of a header
-                values.forEach { value ->
-                    call.response.headers.append(name, value)
-                }
-            }
-            if (response.contentType()?.withoutParameters() == ContentType.Text.Html) {
-                val html = response.bodyAsText()
-                val url = buildUrl {
-                    takeFrom(response.request.url)
-                    host = hostParameter
-                }
-
-                val proxyBaseUrl =
-                    "http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/$hostParameter"
-
-                val transformedHtml = HtmlProxyRewriter.rewrite(
-                    html,
-                    url.toString(),
-                    proxyBaseUrl
-                )
-                call.respondText(
-                    transformedHtml,
-                    contentType = ContentType.Text.Html,
+                // for efficiency and resource usage, we don't load the entire response into memory
+                // instead we are streaming the response from the upstream server to the client
+                call.respondBytesWriter(
+                    contentType = response.contentType(),
                     status = response.status
-                )
-                return@get
-            }
-
-            // for efficiency and resource usage, we don't load the entire response into memory
-            // instead we are streaming the response from the upstream server to the client
-            call.respondBytesWriter(
-                contentType = response.contentType(),
-                status = response.status
-            ) {
-                response.bodyAsChannel().copyTo(this)
+                ) {
+                    response.bodyAsChannel().copyTo(this)
+                }
             }
         }
     }
@@ -200,8 +230,13 @@ private fun rewriteLocation(
 
             // sets the host to this public host, so the request will go through this server
             host = publicHost
-            // fast path, just add the "preview" and host before the real path
-            encodedPathSegments = listOf("preview", hostParameter) + encodedPathSegments
+
+            encodedPathSegments = /*if (encodedPathSegments.isEmpty() || encodedPathSegments[0] != "") {*/
+                    // fast path, just add the "preview" and host before the real path
+                listOf("preview", hostParameter) + encodedPathSegments
+            /*} else {
+                listOf("", "preview", hostParameter) + encodedPathSegments.subList(1, encodedPathSegments.size)
+            }*/
         }
     } catch (_: Exception) {
         location
