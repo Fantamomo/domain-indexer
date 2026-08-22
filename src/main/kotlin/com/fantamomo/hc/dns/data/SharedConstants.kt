@@ -1,13 +1,17 @@
 package com.fantamomo.hc.dns.data
 
 import com.fantamomo.hc.dns.util.GitHubHelperKtorPlugin
+import com.fantamomo.hc.dns.util.net.HackyHostnameVerifier
+import com.fantamomo.hc.dns.util.net.SniSocketFactory
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.compression.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.format.char
 import kotlinx.serialization.json.Json
+import okhttp3.internal.platform.Platform
 
 object SharedConstants {
     val json = Json {
@@ -30,10 +34,33 @@ object SharedConstants {
         }
     }
 
+    val sniSocketFactory: SniSocketFactory by lazy {
+        val defaultTrustManager = Platform.get().platformTrustManager()
+        val backendSSLSocketFactory = Platform.get().newSslSocketFactory(defaultTrustManager)
+        SniSocketFactory(backendSSLSocketFactory, defaultTrustManager)
+    }
+
     val proxyClient by lazy {
         HttpClient(OkHttp) {
+            followRedirects = false
+
+            engine {
+                config {
+                    sslSocketFactory(sniSocketFactory, sniSocketFactory.trustManager)
+                    hostnameVerifier(HackyHostnameVerifier(sniSocketFactory))
+                }
+            }
+
+            install(ContentEncoding) {
+                gzip()
+                deflate()
+                identity()
+
+                mode = ContentEncodingConfig.Mode.DecompressResponse
+            }
         }
     }
+
     // that is the internal github id of the hackclub/dns repo
     const val HACKCLUB_DNS_ID = 123017957L
 

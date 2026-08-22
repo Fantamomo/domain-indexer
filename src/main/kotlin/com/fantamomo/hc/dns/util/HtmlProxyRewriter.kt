@@ -2,9 +2,23 @@ package com.fantamomo.hc.dns.util
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import org.slf4j.LoggerFactory
 import java.net.URI
 
 object HtmlProxyRewriter {
+
+    private val logger = LoggerFactory.getLogger(HtmlProxyRewriter::class.java)
+
+    private val proxyFetchInjector: String? = runCatching {
+        val stream = javaClass.classLoader.getResource("content/proxied_fetch.js")
+        if (stream == null) {
+            logger.error("Failed to load proxied_fetch.js")
+            return@runCatching null
+        }
+        stream.readText()
+    }.onFailure {
+        logger.error("Failed to load proxied_fetch.js", it)
+    }.getOrNull()
 
     private val urlAttributes = setOf(
         "href",
@@ -27,6 +41,15 @@ object HtmlProxyRewriter {
             html,
             sourceUrl
         )
+
+        if (proxyFetchInjector != null) {
+            // if the proxyFetchInjector script has successfully loaded, we add it to the head so that it executes before any other scripts
+            // the proxyFetchInjector script overrides the fetch function to modify requests so that they use the /preview/<site>/... endpoint
+            doc.head()
+                .prependElement("script")
+                .attr("type", "text/javascript")
+                .html(proxyFetchInjector)
+        }
 
         doc.select("*").forEach { element ->
             rewriteAttributes(
