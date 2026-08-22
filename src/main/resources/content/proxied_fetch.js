@@ -8,8 +8,12 @@
         return;
     }
 
-    const site = decodeURIComponent(match[1]);
-    const prefix = `/preview/${encodeURIComponent(site)}`;
+    const previewTarget = decodeURIComponent(match[1]);
+
+    const [site, ...targetParts] = previewTarget.split("+");
+    const target = targetParts.join("+");
+
+    const prefix = `/preview/${encodeURIComponent(previewTarget)}`;
     const currentHost = location.host;
 
     function rewrite(input) {
@@ -27,7 +31,9 @@
             return input;
         }
 
-        if (url.host === currentHost) {
+        const requestHostname = url.hostname;
+
+        if (requestHostname === location.hostname) {
             url.pathname = prefix + url.pathname;
 
             if (originalRequest) {
@@ -37,7 +43,7 @@
             return url;
         }
 
-        if (url.host === site || url.hostname === site) {
+        if (requestHostname === site) {
             url.host = currentHost;
             url.pathname = prefix + url.pathname;
 
