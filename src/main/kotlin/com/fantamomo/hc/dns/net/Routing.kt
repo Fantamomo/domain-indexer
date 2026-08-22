@@ -96,15 +96,33 @@ fun Application.configureRouting() {
 
                         url(upstreamUrl)
 
-                        call.request.headers.forEach { name, value ->
-                            if (name.lowercase() !in headersToIgnoreBySending) {
-                                header(name, value.first())
+
+                        call.request.headers.forEach { name, values ->
+                            val lowercase = name.lowercase()
+
+                            if (lowercase !in headersToIgnoreBySending) {
+                                if (lowercase == HttpHeaders.AcceptEncoding.lowercase()) {
+                                    // we modify the Accept-Encoding header to only include gzip, deflate, and identity
+                                    // because we only support these compression algorithms, and if the server returns HTML
+                                    // we need to decompress the response for the HtmlRewritter
+
+                                    headers.remove(name)
+
+                                    val filteredValues = values.first()
+                                        .split(",")
+                                        .map { it.trim().lowercase() }
+                                        .filter { it == "gzip" || it == "deflate" || it == "identity" }
+
+                                    headers.append(name, filteredValues.joinToString(","))
+                                } else {
+                                    headers.appendAll(name, values)
+                                }
                             }
                         }
                         header(HttpHeaders.Host, hostName.value)
                         header("SNI", hostName.value)
 
-                        header(HttpHeaders.AcceptEncoding, "identity")
+//                        header(HttpHeaders.AcceptEncoding, "identity")
 
                         // stream the body of the call to the upstream host
                         // dont do it by Get or Head because those two methods dont have a body
@@ -116,8 +134,12 @@ fun Application.configureRouting() {
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: Exception) {
-                    call.respondText("Unable to reach upstream host ${hostName.value} via $resolvedHostName")
+                } catch (e: Exception) {
+                    routingLogger.error("Unable to reach upstream host ${hostName.value} via $resolvedHostName", e)
+                    call.respondText(
+                        "Unable to reach upstream host ${hostName.value} via $resolvedHostName",
+                        status = HttpStatusCode.ServiceUnavailable
+                    )
                     return@handle
                 }
 
@@ -125,6 +147,8 @@ fun Application.configureRouting() {
 //                    "Remote ${call.request.httpMethod} $upstreamUrl -> [${response.status}] " +
 //                            "Content-Type=${response.contentType()}"
 //                )
+
+                val isHtml = response.contentType()?.withoutParameters() == ContentType.Text.Html
 
                 response.headers.forEach { name, values ->
                     val lowercase = name.lowercase()
@@ -167,13 +191,26 @@ fun Application.configureRouting() {
                         return@forEach
                     }
 
+                    if (isHtml && lowercase == HttpHeaders.ContentEncoding.lowercase()) {
+                        // if we are forwarding html, we don't want to forward the content-encoding header to the client
+                        // because we rewrite it and for that we decompress it, but the client would still think it's compressed
+                        return@forEach
+                    }
+
                     // forward all values of a header
                     values.forEach { value ->
                         call.response.headers.append(name, value)
                     }
                 }
-                if (response.contentType()?.withoutParameters() == ContentType.Text.Html) {
+
+                if (isHtml) {
+                    routingLogger.info(
+                        "Content-Type=${response.contentType()}, " +
+                                "charset=${response.contentType()?.charset()}"
+                    )
+
                     val html = response.bodyAsText()
+
                     val url = buildUrl {
                         takeFrom(response.request.url)
                         host = hostParameter
@@ -189,7 +226,7 @@ fun Application.configureRouting() {
                     )
                     call.respondText(
                         transformedHtml,
-                        contentType = ContentType.Text.Html,
+                        contentType = response.contentType(),
                         status = response.status
                     )
                     return@handle
