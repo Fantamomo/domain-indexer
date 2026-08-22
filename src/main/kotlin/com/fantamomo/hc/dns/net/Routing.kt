@@ -84,7 +84,7 @@ fun Application.configureRouting() {
                     return@handle
                 }
 
-                val path = call.pathParameters["path"] ?: ""
+                val path = call.pathParameters.getAll("path") ?: emptyList()
 
                 val upstreamUrl = buildUrl {
                     // just copy the complete uri from the request
@@ -102,7 +102,7 @@ fun Application.configureRouting() {
                     protocol = if (hostParameter in hostThatRedirectToHttps) URLProtocol.HTTPS else URLProtocol.HTTP
 
                     // then override the path to the path from the request
-                    encodedPath = path
+                    pathSegments = path
 
                     // then override the host to the resolved host name
                     host = resolvedHostName
