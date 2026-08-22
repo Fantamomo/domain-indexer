@@ -37,6 +37,8 @@ private val headersToIgnoreByReceiving = hopByHopHeaders + setOf(
 
 private val routingLogger = LoggerFactory.getLogger("Routing")
 
+private val hostThatRedirectToHttps: MutableSet<String> = mutableSetOf()
+
 fun Application.configureRouting() {
     routing {
 //        cacheOutput(1.minutes) {
@@ -88,11 +90,16 @@ fun Application.configureRouting() {
                     // just copy the complete uri from the request
                     takeFrom(call.request.uri)
 
-                    // then override the protocol to HTTP
-                    // (because we cannot be sure that the upstream server uses HTTPS,
-                    // and if he doesn't the request will fail, but if we using HTTP and
-                    // the server supports HTTPS it automatically redirects to HTTPS)
-                    protocol = URLProtocol.HTTP
+                    // #### THE FOLLOWING IT NOT TRUE, ONLY KEEPT FOR REFERENCE
+                    // #### then override the protocol to HTTP
+                    // #### (because we cannot be sure that the upstream server uses HTTPS,
+                    // #### and if he doesn't the request will fail, but if we using HTTP and
+                    // #### the server supports HTTPS it automatically redirects to HTTPS)
+                    // yeah normally that would be true, but because we pass redirects through to the client
+                    // we would land in an infinite loop, see the comments by
+                    // `hostThatRedirectToHttps.add(hostParameter)`
+                    // for more information
+                    protocol = if (hostParameter in hostThatRedirectToHttps) URLProtocol.HTTPS else URLProtocol.HTTP
 
                     // then override the path to the path from the request
                     encodedPath = path
@@ -101,14 +108,17 @@ fun Application.configureRouting() {
                     host = resolvedHostName
                 }
 
-//                routingLogger.info("${call.request.httpMethod} ${call.request.uri} -> $upstreamUrl")
+
+                SharedConstants.sniSocketFactory.setTargetSni(
+                    hosts = listOf(upstreamUrl.host),
+                    target = hostName.value
+                )
 
                 val response = try {
                     SharedConstants.proxyClient.request {
                         method = call.request.httpMethod
 
                         url(upstreamUrl)
-
 
                         call.request.headers.forEach { name, values ->
                             val lowercase = name.lowercase()
@@ -135,8 +145,6 @@ fun Application.configureRouting() {
                         header(HttpHeaders.Host, hostName.value)
                         header("SNI", hostName.value)
 
-//                        header(HttpHeaders.AcceptEncoding, "identity")
-
                         // stream the body of the call to the upstream host
                         // dont do it by Get or Head because those two methods dont have a body
                         if (call.request.httpMethod != HttpMethod.Get &&
@@ -155,11 +163,6 @@ fun Application.configureRouting() {
                     )
                     return@handle
                 }
-
-//                routingLogger.info(
-//                    "Remote ${call.request.httpMethod} $upstreamUrl -> [${response.status}] " +
-//                            "Content-Type=${response.contentType()}"
-//                )
 
                 val isHtml = response.contentType()?.withoutParameters() == ContentType.Text.Html
 
@@ -187,15 +190,22 @@ fun Application.configureRouting() {
                                     hostParameter
                                 )
                                 call.response.headers.append(name, rewrittenLocation.toString())
+
+                                // not the best location here, but it works
+                                // some servers send permanent redirects to the HTTPS version of the site if we try to connect to them via HTTP
+                                // while this is good and mostly works, it does not work in this specific case
+                                // it would result in an infinite loop because of the location rewrite
+                                // to avoid this we need to directly request via HTTPS
+                                // so we add the host to a list of hosts that redirect to HTTPS
+                                // and on the next request we will directly request via HTTPS
+                                if (response.status == HttpStatusCode.PermanentRedirect &&
+                                    upstreamUrl.protocol == URLProtocol.HTTP &&
+                                    location.protocol == URLProtocol.HTTPS
+                                ) {
+                                    hostThatRedirectToHttps.add(hostParameter)
+                                }
                             }
                         }
-//                        routingLogger.info(
-//                            "Remote ${call.request.httpMethod} $upstreamUrl -> Got Location: ${
-//                                values.joinToString(
-//                                    ", "
-//                                )
-//                            } | Rewritten to: ${call.response.headers.values(name).joinToString(", ")}"
-//                        )
 
                         return@forEach
                     }
@@ -217,10 +227,6 @@ fun Application.configureRouting() {
                 }
 
                 if (isHtml) {
-                    routingLogger.info(
-                        "Content-Type=${response.contentType()}, " +
-                                "charset=${response.contentType()?.charset()}"
-                    )
 
                     val html = response.bodyAsText()
 
