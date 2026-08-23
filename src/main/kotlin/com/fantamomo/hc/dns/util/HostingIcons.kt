@@ -69,6 +69,8 @@ interface HostingIcons {
             NEST,
         )
 
+        fun findEmoji(value: String): String? = all.firstOrNull { it.match(value) }?.icon
+
 
         private fun regex(@Language("RegExp") vararg regexes: String, icon: String) =
             RegexHostingIcon(regexes.map { Regex(it) }, icon = icon)
