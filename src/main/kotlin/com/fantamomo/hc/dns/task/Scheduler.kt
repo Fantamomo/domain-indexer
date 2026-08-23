@@ -2,7 +2,6 @@ package com.fantamomo.hc.dns.task
 
 import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.data.SharedConstants
-import com.fantamomo.hc.dns.data.SharedValues
 import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.*
 import com.fantamomo.hc.dns.manager.DatabaseManager
@@ -118,7 +117,7 @@ object Scheduler {
 
     private suspend fun runTask() {
         val originUpdated = try {
-            val fetch = SharedValues.git.fetch()
+            val fetch = git.fetch()
             fetch.trackingRefUpdates.isNotEmpty()
         } catch (e: Exception) {
             logger.error("Failed to fetch updates for repo", e)
