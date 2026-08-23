@@ -37,8 +37,8 @@ object GetForksService {
         var totalRequests = 0
         var totalWaitTime = Duration.ZERO
 
-        var fetchedPages = 0
-        var totalPages: Int? = null
+        var fetchedPages: Int
+        var totalPages: Int?
 
         logger.trace("Fetching forks: https://github.com/hackclub/dns")
 

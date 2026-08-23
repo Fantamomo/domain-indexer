@@ -46,7 +46,6 @@ fun Duration.humanReadable(
         if (i >= hardIndex) {
             val value = remaining / size
             if (value > 0) result.add("${value}${unit.symbol}")
-            remaining = 0
             break
         }
 

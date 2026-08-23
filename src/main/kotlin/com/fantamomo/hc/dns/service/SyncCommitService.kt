@@ -241,7 +241,6 @@ object SyncCommitService {
         if (commits.isEmpty()) return
 
         val users = (commits.mapNotNull { it.author } + commits.mapNotNull { it.commiter }).distinctBy { it.id }
-        val userIds = users.mapTo(mutableSetOf()) { it.id }
         val existingUsers = try {
             DatabaseManager.transaction {
                 UserTable.select(UserTable.id)

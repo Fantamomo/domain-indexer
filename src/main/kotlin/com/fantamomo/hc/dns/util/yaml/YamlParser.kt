@@ -80,7 +80,6 @@ object YamlParser {
                 val sb = StringBuilder()
 
                 var j = i
-                var lastIndent = indent
 
                 while (j < lines.size) {
                     val l = lines[j]
@@ -92,7 +91,6 @@ object YamlParser {
                     if (sb.isNotEmpty()) sb.append(' ')
                     sb.append(t)
 
-                    lastIndent = indentation(l)
                     j++
                 }
 
@@ -164,8 +162,7 @@ object YamlParser {
         val list = mutableListOf<YamlElement>()
         var i = start
 
-        var pendingMap: LinkedHashMap<String, YamlElement>? = null
-        var lastMapKey: String? = null
+        var lastMapKey: String?
 
         while (i < lines.size) {
             val line = lines[i]
@@ -185,7 +182,6 @@ object YamlParser {
             }
 
             val map = LinkedHashMap<String, YamlElement>()
-            pendingMap = map
 
             parseKeyValueIntoMap(map, content)
             lastMapKey = map.keys.last()
