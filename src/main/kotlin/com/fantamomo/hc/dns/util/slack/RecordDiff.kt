@@ -3,6 +3,7 @@ package com.fantamomo.hc.dns.util.slack
 import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.model.RepoWithBranch
 import com.fantamomo.hc.dns.model.dns.RecordType
+import com.fantamomo.hc.dns.util.HostingIcons
 
 data class RecordDiff(
     val fqdn: String,
@@ -66,15 +67,15 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
     newline()
     bold("Value: ")
     when (val vc = diff.valueChange) {
-        is ValueChange.Added -> code(vc.value.cap(120))
-        is ValueChange.Removed -> strikeCode(vc.value.cap(120))
+        is ValueChange.Added -> recordValue(vc.value, diff.type)
+        is ValueChange.Removed -> recordValue(vc.value, diff.type, strikeThrough = true)
         is ValueChange.Modified -> {
-            strikeCode(vc.old.cap(80))
+            recordValue(vc.old, diff.type, strikeThrough = true)
             text("  →  ")
-            code(vc.new.cap(80))
+            recordValue(vc.new, diff.type)
         }
 
-        is ValueChange.Unchanged -> code(vc.value.cap(120))
+        is ValueChange.Unchanged -> recordValue(vc.value, diff.type)
         null -> text("—")
     }
 
@@ -109,5 +110,19 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
             bold("Commiter: ")
             user(commiter)
         }
+    }
+}
+
+private fun RichSectionBuilder.recordValue(value: String, type: RecordType, strikeThrough: Boolean = false) {
+    if (type.isNamedRecordALink()) {
+        val emojiName = HostingIcons.findEmoji(value)
+        if (emojiName != null) {
+            emoji(emojiName)
+        }
+    }
+    if (strikeThrough) {
+        strikeCode(value.cap(120))
+    } else {
+        code(value.cap(120))
     }
 }
