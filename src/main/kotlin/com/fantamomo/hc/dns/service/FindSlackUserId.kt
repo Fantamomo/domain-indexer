@@ -183,7 +183,12 @@ object FindSlackUserId {
             return null
         }
         try {
-            return response.body<JsonObject>()["profile"]!!.jsonObject
+            val profile = response.body<JsonObject>()["profile"]
+            if (profile == null) {
+                logger.warn("Response returned no profile field")
+                return null
+            }
+            return profile.jsonObject
         } catch (e: Exception) {
             logger.error("Failed to parse slack user profile response", e)
             return null
