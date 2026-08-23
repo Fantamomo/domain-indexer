@@ -33,6 +33,9 @@ interface HostingIcons {
             "[0-9a-f]{16}.vercel-dns-0\\d{2}.com\\.",
             ".+\\.vercel\\.app\\.",
             ".+\\.vercel-dns\\.com\\.",
+            "216\\.198\\.79\\.1",
+            "216\\.150\\.1\\.1",
+            "76\\.76\\.21\\.21",
             icon = "vercel"
         )
         val GITHUB_PAGES = regex(

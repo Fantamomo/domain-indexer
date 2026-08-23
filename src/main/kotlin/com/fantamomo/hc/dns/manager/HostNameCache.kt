@@ -53,7 +53,7 @@ object HostNameCache {
             null
         } else {
             if (targetAddress != null) {
-                if (value.any { it.value.removeSuffix(".") == targetAddress }) {
+                if (value.any { it.value.removeSuffix(".") == targetAddress.removeSuffix(".") }) {
                     logger.info("Found expected target address for ${hostName.value}: $targetAddress")
                     targetAddress
                 } else {

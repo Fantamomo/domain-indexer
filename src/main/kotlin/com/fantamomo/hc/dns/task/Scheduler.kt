@@ -36,7 +36,7 @@ import kotlin.time.measureTime
 import kotlin.time.measureTimedValue
 
 object Scheduler {
-    private val TIME_BETWEEN_RUNS = 1.minutes
+    private val TIME_BETWEEN_RUNS = 30.seconds
 
     private val logger = LoggerFactory.getLogger(Scheduler::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
