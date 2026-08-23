@@ -120,8 +120,7 @@ object DnsIndexer {
 
         var previousState: Map<RecordKey, ParsedRecord> = mergeBaseState
 
-        for (forkCommit in forkCommits) {
-            val currentState = forkCommit.state
+        for ((hash, timestamp, currentState) in forkCommits) {
 
             for (key in proposalKeys) {
                 val old = previousState[key]
@@ -139,7 +138,7 @@ object DnsIndexer {
                 }
 
                 val baseVersion = inBase?.toVersion(mergeBase, "hackclub/dns", "main", mergeBaseTimestamp)
-                val newVersion = new?.toVersion(forkCommit.hash, repository, branch, forkCommit.timestamp)
+                val newVersion = new?.toVersion(hash, repository, branch, timestamp)
 
                 val existing = forkProposals[proposalKey]
                 if (existing == null) {
@@ -156,8 +155,8 @@ object DnsIndexer {
                                 type = ForkProposalEventType.OPENED,
                                 oldVersion = null,
                                 newVersion = newVersion,
-                                commit = forkCommit.hash,
-                                timestamp = forkCommit.timestamp
+                                commit = hash,
+                                timestamp = timestamp
                             )
                         )
                     )
@@ -169,8 +168,8 @@ object DnsIndexer {
                         type = ForkProposalEventType.UPDATED,
                         oldVersion = oldVersion,
                         newVersion = newVersion,
-                        commit = forkCommit.hash,
-                        timestamp = forkCommit.timestamp
+                        commit = hash,
+                        timestamp = timestamp
                     )
                 }
             }
