@@ -13,6 +13,9 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.utils.io.*
 import org.slf4j.LoggerFactory
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 import kotlin.time.measureTimedValue
 
 
@@ -33,16 +36,20 @@ private val headersToIgnoreBySending = hopByHopHeaders + setOf(
 )
 
 private val headersToIgnoreByReceiving = hopByHopHeaders + setOf(
-    HttpHeaders.ContentLength.lowercase(),
-    "X-Robots-Tag".lowercase(),
-    "X-Proxy-Target".lowercase(),
-    "X-Proxy-Upstream-Time".lowercase(),
-    "X-Proxy-Resolved-Host".lowercase()
-)
+    HttpHeaders.ContentLength,
+    "X-Robots-Tag",
+    "X-Proxy-Target",
+    "X-Proxy-Upstream-Time",
+    "X-Proxy-Resolved-Host",
+    "Strict-Transport-Security",
+    "Alt-Svc",
+).mapTo(mutableSetOf()) { it.lowercase() }
 
 private val routingLogger = LoggerFactory.getLogger("Routing")
 
-private val hostThatRedirectToHttps: MutableSet<String> = mutableSetOf()
+private val hostThatRedirectToHttpsCacheDuration = 5.minutes
+
+private val hostThatRedirectToHttps: MutableMap<String, Instant> = mutableMapOf()
 
 
 suspend fun RoutingContext.proxyHandle() {
@@ -91,7 +98,17 @@ suspend fun RoutingContext.proxyHandle() {
         // we would land in an infinite loop, see the comments by
         // `hostThatRedirectToHttps.add(hostParameter)`
         // for more information
-        protocol = if (hostParameter in hostThatRedirectToHttps) URLProtocol.HTTPS else URLProtocol.HTTP
+        val insertTimeOrNull = hostThatRedirectToHttps[hostParameter]
+        protocol = if (insertTimeOrNull != null) {
+            if (Clock.System.now() - insertTimeOrNull < hostThatRedirectToHttpsCacheDuration) {
+                URLProtocol.HTTPS
+            } else {
+                hostThatRedirectToHttps.remove(hostParameter)
+                URLProtocol.HTTP
+            }
+        } else {
+            URLProtocol.HTTP
+        }
 
         // then override the path to the path from the request
         pathSegments = path
@@ -192,11 +209,11 @@ suspend fun RoutingContext.proxyHandle() {
                     // to avoid this we need to directly request via HTTPS
                     // so we add the host to a list of hosts that redirect to HTTPS
                     // and on the next request we will directly request via HTTPS
-                    if (response.status == HttpStatusCode.PermanentRedirect &&
+                    if (response.status.value in 300..399 &&
                         upstreamUrl.protocol == URLProtocol.HTTP &&
                         location.protocol == URLProtocol.HTTPS
                     ) {
-                        hostThatRedirectToHttps.add(hostParameter)
+                        hostThatRedirectToHttps[hostParameter] = Clock.System.now()
                     }
                 }
             }
@@ -205,6 +222,10 @@ suspend fun RoutingContext.proxyHandle() {
         }
 
         if (lowercase in headersToIgnoreByReceiving) {
+            return@forEach
+        }
+
+        if (lowercase == "upgrade-insecure-requests" && !Config.SECURE_MESSAGE_HOST) {
             return@forEach
         }
 
@@ -233,7 +254,7 @@ suspend fun RoutingContext.proxyHandle() {
 
         val url = buildUrl {
             takeFrom(response.request.url)
-            host = hostParameter
+            host = rawHostName
         }
 
         val proxyBaseUrl =
@@ -284,7 +305,13 @@ private fun rewriteLocation(
 
 
             // sets the host to this public host, so the request will go through this server
-            host = publicHost
+            if (publicHost.contains(":")) {
+                val parts = publicHost.split(":")
+                host = parts[0]
+                port = parts[1].toInt()
+            } else {
+                host = publicHost
+            }
 
             encodedPathSegments = /*if (encodedPathSegments.isEmpty() || encodedPathSegments[0] != "") {*/
                     // fast path, just add the "preview" and host before the real path
