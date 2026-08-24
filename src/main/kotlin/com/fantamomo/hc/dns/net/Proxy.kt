@@ -184,6 +184,12 @@ suspend fun RoutingContext.proxyHandle() {
             for (value in values) {
                 val location = parseUrl(value)
                 if (location == null) {
+                    if (value.startsWith("/")) {
+                        val newUrl =
+                            "http${if (Config.SECURE_MESSAGE_HOST) "s" else ""}://${Config.MESSAGE_HOST}/preview/$hostParameter$value"
+                        call.response.headers.append(name, newUrl)
+                        continue
+                    }
                     // if it is not a valid url, we are just passing it through
                     call.response.headers.append(name, value)
                     continue
