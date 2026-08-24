@@ -1,6 +1,7 @@
 package com.fantamomo.hc.dns.task
 
 import com.fantamomo.hc.dns.App
+import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.data.SharedValues.git
 import com.fantamomo.hc.dns.db.*
@@ -35,7 +36,7 @@ import kotlin.time.measureTime
 import kotlin.time.measureTimedValue
 
 object Scheduler {
-    private val TIME_BETWEEN_RUNS = 30.seconds
+    private val TIME_BETWEEN_RUNS by lazy { Config.SCHEDULER_INTERVAL }
 
     private val logger = LoggerFactory.getLogger(Scheduler::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
