@@ -114,15 +114,17 @@ fun RichSectionBuilder.renderDiff(diff: RecordDiff, commitsToSlackId: Map<String
 }
 
 private fun RichSectionBuilder.recordValue(value: String, type: RecordType, strikeThrough: Boolean = false) {
-    if (type.isNamedRecordALink()) {
-        val emojiName = HostingIcons.findEmoji(value)
-        if (emojiName != null) {
-            emoji(emojiName)
-        }
-    }
     if (strikeThrough) {
         strikeCode(value.cap(120))
     } else {
         code(value.cap(120))
+    }
+    if (type.isNamedRecordALink()) {
+        val emojiName = HostingIcons.findEmoji(value)
+        if (emojiName != null) {
+            text("(")
+            emoji(emojiName)
+            text(")")
+        }
     }
 }
