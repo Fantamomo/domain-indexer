@@ -177,6 +177,10 @@ suspend fun RoutingContext.proxyHandle() {
 
     val isHtml = response.contentType()?.withoutParameters() == ContentType.Text.Html
 
+    // we set this to true if we pass through a location header that is not safe
+    // a location header is considered unsafe if it could lead to a redirect to a different part of the site which is not longer under the /preview/<host> path
+    var unsafeLocationValue = false
+
     response.headers.forEach { name, values ->
         val lowercase = name.lowercase()
 
@@ -190,8 +194,10 @@ suspend fun RoutingContext.proxyHandle() {
                         call.response.headers.append(name, newUrl)
                         continue
                     }
-                    // if it is not a valid url, we are just passing it through
+                    // if it is not a valid url and does not start with /, we are just passing it through
                     call.response.headers.append(name, value)
+                    // because we are passing through a location header that is not safe, we set this to true
+                    unsafeLocationValue = true
                     continue
                 }
 
@@ -254,6 +260,15 @@ suspend fun RoutingContext.proxyHandle() {
         append("X-Proxy-Upstream-Time", duration.inWholeMilliseconds.toString())
     }
 
+    val returnStatus = if (unsafeLocationValue && response.status == HttpStatusCode.PermanentRedirect) {
+        // seams like we are passing through a location header that is not safe, so we instead of redirecting permanently, we redirect temporarily
+        // because maybe we did a mistake and if it is only a temporary redirect, we can fix it in the next version
+        // but if it is a permanent redirect, we would have a problem (already was there)
+        HttpStatusCode.TemporaryRedirect
+    } else {
+        response.status
+    }
+
     if (isHtml) {
 
         val html = response.bodyAsText()
@@ -274,7 +289,7 @@ suspend fun RoutingContext.proxyHandle() {
         call.respondText(
             transformedHtml,
             contentType = response.contentType(),
-            status = response.status
+            status = returnStatus
         )
         return
     }
@@ -283,7 +298,7 @@ suspend fun RoutingContext.proxyHandle() {
     // instead we are streaming the response from the upstream server to the client
     call.respondBytesWriter(
         contentType = response.contentType(),
-        status = response.status
+        status = returnStatus
     ) {
         response.bodyAsChannel().copyTo(this)
     }
