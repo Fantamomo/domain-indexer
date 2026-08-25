@@ -6,6 +6,8 @@ import java.nio.file.Path
 import java.util.*
 import kotlin.io.path.*
 import kotlin.properties.ReadOnlyProperty
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 @Suppress("SameParameterValue")
 object Config {
@@ -32,7 +34,7 @@ object Config {
 
     val MESSAGE_HOST by string(
         key = "message.host",
-        default = "localhost",
+        default = "localhost:8080",
         description = "The host we should use in messages, so that the links work"
     )
 
@@ -40,6 +42,12 @@ object Config {
         key = "message.host.secure",
         default = false,
         description = "Whether the message.host is behind HTTPS (through a reverse proxy)"
+    )
+
+    val SCHEDULER_INTERVAL by duration(
+        key = "scheduler.interval",
+        default = 30.seconds,
+        description = "The interval at which the scheduler should run."
     )
 
     val REPO_DIR: Path by path(
@@ -138,6 +146,15 @@ object Config {
             "false" -> false
             else -> throw IllegalArgumentException("Expected 'true' or 'false'.")
         }
+    }
+
+    private fun duration(
+        key: String,
+        default: Duration,
+        description: String,
+        canBeSetByEnv: Boolean = true
+    ) = register(key, default, description, canBeSetByEnv) { value ->
+        Duration.parse(value)
     }
 
     private fun path(
