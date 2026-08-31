@@ -36,6 +36,9 @@ interface HostingIcons {
             "216\\.198\\.79\\.1",
             "216\\.150\\.1\\.1",
             "76\\.76\\.21\\.21",
+            // the hackclub.dev name server points to Vercel for automatic subdomain creation for deployed projects, see https://github.com/hackclub/dns/blob/main/hackclub.dev.md
+            ".+\\.hackclub\\.dev\\.",
+            "hackclub\\.dev\\.",
             icon = "vercel"
         )
         val GITHUB_PAGES = regex(
@@ -53,12 +56,17 @@ interface HostingIcons {
 //        )
         val ORCHARD = regex(
             "a\\.ingress\\.tier2\\.infra\\.hackclub\\.com\\.",
-            icon = "orchard-icon"
+            icon = "orchard"
         )
         val NEST = regex(
             ".+\\.hackclub\\.app\\.",
             "65\\.108\\.74\\.29", // nests ip address
             icon = "nest"
+        )
+        val CLOUDFLARE_PAGES = regex(
+            ".+\\.pages\\.dev\\.",
+            "pages\\.dev\\.",
+            icon = "cloudflare"
         )
 
 
@@ -70,6 +78,7 @@ interface HostingIcons {
 //            COOLIFY_B,
             ORCHARD,
             NEST,
+            CLOUDFLARE_PAGES
         )
 
         fun findEmoji(value: String): String? = all.firstOrNull { it.match(value) }?.icon
