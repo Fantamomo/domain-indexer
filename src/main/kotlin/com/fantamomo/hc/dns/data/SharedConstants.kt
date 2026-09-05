@@ -31,6 +31,13 @@ object SharedConstants {
             install(ContentNegotiation) {
                 json(json)
             }
+            install(ContentEncoding) {
+                gzip()
+                deflate()
+                identity()
+
+                mode = ContentEncodingConfig.Mode.DecompressResponse
+            }
         }
     }
 
