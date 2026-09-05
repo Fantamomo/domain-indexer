@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS persistent_data ("name" VARCHAR(255) PRIMARY KEY, "value" VARCHAR(255) NOT NULL);
