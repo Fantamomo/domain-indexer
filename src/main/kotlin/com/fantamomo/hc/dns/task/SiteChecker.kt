@@ -2,6 +2,7 @@ package com.fantamomo.hc.dns.task
 
 import com.fantamomo.hc.dns.App
 import com.fantamomo.hc.dns.data.Config
+import com.fantamomo.hc.dns.data.SharedConstants
 import com.fantamomo.hc.dns.db.RecordTable
 import com.fantamomo.hc.dns.db.SiteCheckerIgnoreListTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
@@ -9,12 +10,17 @@ import com.fantamomo.hc.dns.model.SiteCheckResult
 import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordState
 import com.fantamomo.hc.dns.model.dns.RecordType
+import io.ktor.client.request.*
+import io.ktor.http.*
 import io.ktor.network.sockets.SocketTimeoutException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
 import kotlinx.io.IOException
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.*
+import okhttp3.internal.platform.Platform
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
@@ -64,6 +70,7 @@ object SiteChecker {
     private data class Site(
         val host: String,
         val target: String,
+        val type: RecordType
     )
 
     private class CheckContext(
@@ -153,7 +160,7 @@ object SiteChecker {
 
         logger.info("Site checker started")
 
-        delay(TIME_BETWEEN_RUNS)
+//        delay(TIME_BETWEEN_RUNS)
 
         try {
             val job = scope.launch {
@@ -189,10 +196,11 @@ object SiteChecker {
                 .select(
                     RecordTable.host,
                     RecordTable.name,
+                    RecordTable.type,
                     RecordTable.currentValue,
                 )
                 .where {
-                    RecordTable.type inList RecordType.RESOLVABLE and
+                    RecordTable.type inList RecordType.CHECKABLE and
                             (RecordTable.state eq RecordState.ACTIVE) and
                             notExists(
                                 SiteCheckerIgnoreListTable
@@ -209,6 +217,11 @@ object SiteChecker {
                 .mapNotNull {
                     val host = it[RecordTable.host]
                     val name = it[RecordTable.name]
+
+                    if (name.startsWith("*")) {
+                        // we are not able to really check wildcard records, so we just skip them
+                        return@mapNotNull null
+                    }
                     val currentValue = it[RecordTable.currentValue]
 
                     val target = currentValue?.value
@@ -225,6 +238,7 @@ object SiteChecker {
                     Site(
                         host = fqdn,
                         target = target,
+                        type = it[RecordTable.type]
                     )
                 }
                 .toList()
@@ -233,6 +247,8 @@ object SiteChecker {
         if (sites.isEmpty()) {
             return@coroutineScope
         }
+
+        logger.info("Found ${sites.size} sites to check")
 
         val sitesByTarget = sites.groupBy { it.target }
         val globalSemaphore = Semaphore(MAX_GLOBAL_CONCURRENCY)
@@ -269,8 +285,41 @@ object SiteChecker {
                     }
 
                     try {
+                        logger.info("Checking site: ${site.host}")
+
                         @Suppress("HttpUrlsUsage")
-                        checkSite("http://${site.host}/")
+                        val result = checkSite("http://${site.host}/")
+
+                        when (result) {
+                            is SiteCheckResult.Failure -> {
+                                if ("._domainkey." in site.host && site.type == RecordType.CNAME && result.type == SiteProblemType.DNS_UNAVAILABLE) {
+                                    // this is mostly a DKIM record, which will never resolve to an IP address
+                                    // so we just ignore it
+                                    logger.info("Skipping alert for site ${site.host} because it is a DKIM record")
+                                    return@async
+                                }
+                                SharedConstants.client.post("https://slack.com/api/chat.postMessage") {
+                                    bearerAuth(Config.SLACK_BOT_TOKEN)
+                                    contentType(ContentType.Application.Json)
+                                    setBody(buildJsonObject {
+                                        put("channel", Config.SLACK_CHANNEL_FOR_ALERTS)
+                                        put("text", """
+                                            Problem found!
+                                            Site: ${site.host}
+                                            Record Type: ${site.type}
+                                            Record Target: ${site.target}
+                                            Type: ${result.type}
+                                            Details:
+                                        """.trimIndent() + " ${result.details}")
+                                    })
+                                }
+                            }
+                            SiteCheckResult.Success -> { /* Do nothing */ }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.error("Unexpected error checking site ${site.host}", e)
                     } finally {
                         globalSemaphore.release()
                     }
@@ -383,10 +432,10 @@ object SiteChecker {
 //            }
 //
 //            else -> {
-                return checkCertificateExpiry(
-                    response,
-                    context,
-                )
+        return checkCertificateExpiry(
+            response,
+            context,
+        )
 //            }
 //        }
     }
@@ -588,12 +637,12 @@ object SiteChecker {
                 sslContext.socketFactory,
                 recordingTrustManager,
             )
-            .hostnameVerifier { hostname, session ->
-                val verifier = HttpsURLConnection
-                    .getDefaultHostnameVerifier()
-
-                verifier.verify(hostname, session)
-            }
+//            .hostnameVerifier { hostname, session ->
+//                val verifier = HttpsURLConnection
+//                    .getDefaultHostnameVerifier()
+//
+//                verifier.verify(hostname, session)
+//            }
             .followRedirects(true)
             .followSslRedirects(true)
             .eventListener(createEventListener(context))
@@ -601,15 +650,7 @@ object SiteChecker {
     }
 
     private fun createTrustManager(): X509TrustManager {
-        val factory = TrustManagerFactory.getInstance(
-            TrustManagerFactory.getDefaultAlgorithm()
-        )
-
-        factory.init(null as? java.security.KeyStore?)
-
-        return factory.trustManagers
-            .filterIsInstance<X509TrustManager>()
-            .single()
+        return Platform.get().platformTrustManager()
     }
 
     private fun createEventListener(
