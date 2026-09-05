@@ -45,15 +45,14 @@ interface HostingIcons {
             ".+\\.github\\.io\\.",
             icon = "github"
         )
-        // i couldnt find a good coolify emoji in slack, so yeah
-//        val COOLIFY_A = regex(
-//            "a\\.selfhosted\\.hackclub\\.com\\.",
-//            icon = ""
-//        )
-//        val COOLIFY_B = regex(
-//            "b\\.selfhosted\\.hackclub\\.com\\.",
-//            icon = "coolify"
-//        )
+        val COOLIFY_A = regex(
+            "a\\.selfhosted\\.hackclub\\.com\\.",
+            icon = "a"
+        )
+        val COOLIFY_B = regex(
+            "b\\.selfhosted\\.hackclub\\.com\\.",
+            icon = "b"
+        )
         val ORCHARD = regex(
             "a\\.ingress\\.tier2\\.infra\\.hackclub\\.com\\.",
             icon = "orchard"
@@ -74,8 +73,8 @@ interface HostingIcons {
             NETLIFY,
             VERCEL,
             GITHUB_PAGES,
-//            COOLIFY_A,
-//            COOLIFY_B,
+            COOLIFY_A,
+            COOLIFY_B,
             ORCHARD,
             NEST,
             CLOUDFLARE_PAGES
