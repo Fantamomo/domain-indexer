@@ -4,6 +4,7 @@ import com.fantamomo.hc.dns.data.Config
 import com.fantamomo.hc.dns.net.rootModule
 import com.fantamomo.hc.dns.task.InitTask
 import com.fantamomo.hc.dns.task.Scheduler
+import com.fantamomo.hc.dns.task.SiteChecker
 import com.fantamomo.hc.dns.task.init.*
 import com.fantamomo.hc.dns.util.humanReadable
 import io.ktor.server.application.*
@@ -55,9 +56,12 @@ object App {
     private suspend fun start() = coroutineScope {
         val startTask = launch { startInitTask() }
         launch { startServer() }
+        startTask.join() // we wait for the init tasks to complete before starting the scheduler
         launch {
-            startTask.join() // we wait for the init tasks to complete before starting the scheduler
             Scheduler.start()
+        }
+        launch {
+            SiteChecker.start()
         }
     }
 
