@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS site_checker_ignore_list (host VARCHAR(24), "name" VARCHAR(255), reason VARCHAR(255) NOT NULL, CONSTRAINT pk_site_checker_ignore_list PRIMARY KEY (host, "name"));
