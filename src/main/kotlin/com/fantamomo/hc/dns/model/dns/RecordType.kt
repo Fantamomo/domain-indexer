@@ -8,4 +8,8 @@ enum class RecordType {
     TXT;
 
     fun isNamedRecordALink() = this == CNAME || this == ALIAS || this == A || this == AAAA
+
+    companion object {
+        val RESOLVABLE = listOf(A, AAAA, CNAME, ALIAS)
+    }
 }
