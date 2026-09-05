@@ -7,6 +7,7 @@ import java.util.*
 import kotlin.io.path.*
 import kotlin.properties.ReadOnlyProperty
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 @Suppress("SameParameterValue")
@@ -50,6 +51,12 @@ object Config {
         description = "The interval at which the scheduler should run."
     )
 
+    val SITE_CHECK_INTERVAL by duration(
+        key = "site.check.interval",
+        default = 1.minutes,
+        description = "The interval at which the site checker should run."
+    )
+
     val REPO_DIR: Path by path(
         key = "repo.dir",
         default = Path("./dns"),
@@ -84,10 +91,17 @@ object Config {
         canBeSetByEnv = true
     )
 
-    val SLACK_WEB_HOOK_URL: String by string(
-        key = "slack.webhook.url",
+    val SLACK_CHANNEL_FOR_UPDATES: String by string(
+        key = "slack.channel.updates",
         default = "",
-        description = "The Slack webhook URL used to send notifications.",
+        description = "The Slack channel used to send notifications for new dns records or proposals",
+        canBeSetByEnv = true
+    )
+
+    val SLACK_CHANNEL_FOR_ALERTS: String by string(
+        key = "slack.channel.alerts",
+        default = "",
+        description = "The Slack channel used to send notifications for alerts",
         canBeSetByEnv = true
     )
 

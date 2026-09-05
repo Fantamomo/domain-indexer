@@ -10,12 +10,11 @@ import com.fantamomo.hc.dns.model.dns.ForkProposal
 import com.fantamomo.hc.dns.model.dns.RecordKey
 import com.fantamomo.hc.dns.model.dns.RecordTimeline
 import com.fantamomo.hc.dns.util.slack.*
+import io.ktor.client.call.*
 import io.ktor.client.request.*
-import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.flow.associate
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.alias
 import org.jetbrains.exposed.v1.core.neq
@@ -40,9 +39,9 @@ object SlackNotificationService {
         changedForkProposals: List<ForkProposal> = emptyList(),
         closedForkProposals: List<ForkProposal> = emptyList(),
     ) {
-        val webhookUrl = Config.SLACK_WEB_HOOK_URL
-        if (webhookUrl.isBlank()) {
-            logger.warn("Slack webhook URL is not configured, skipping notification")
+        val targetChannel = Config.SLACK_CHANNEL_FOR_UPDATES
+        if (targetChannel.isBlank()) {
+            logger.warn("Slack channel for updates is not configured, skipping notification")
             return
         }
 
@@ -127,24 +126,35 @@ object SlackNotificationService {
             contextMarkdown(":star: star the <https://github.com/fantamomo/domain-indexer|repo>")
         }
 
-        post(webhookUrl, payload)
+        postMessage(targetChannel, payload)
     }
 
-    private suspend fun post(webhookUrl: String, payload: kotlinx.serialization.json.JsonObject) {
+    private suspend fun postMessage(targetChannel: String, payload: JsonObject) {
+        val payloadMap = payload.toMutableMap()
+        payloadMap["channel"] = JsonPrimitive(targetChannel)
+        val payloadJson = JsonObject(payloadMap)
         runCatching {
-            val response = SharedConstants.client.post(webhookUrl) {
+            val response = SharedConstants.client.post("https://slack.com/api/chat.postMessage") {
+                bearerAuth(Config.SLACK_BOT_TOKEN)
                 contentType(ContentType.Application.Json)
-                setBody(payload)
+                setBody(payloadJson)
             }
-            val bodyAsText = response.bodyAsText()
-            if (response.status.isSuccess()) {
+            val responseJson = response.body<JsonObject>()
+            if (response.status.isSuccess() && (responseJson["ok"] as? JsonPrimitive)?.booleanOrNull == true) {
                 logger.info("Slack notification sent successfully")
-            } else if (response.status.value == 400 && bodyAsText == "invalid_blocks") {
+                return@runCatching
+            }
+            val error = (responseJson["error"] as? JsonPrimitive)?.contentOrNull
+            if (response.status.value == 400 && error == "invalid_blocks") {
                 // this should never happen in a production environment,
                 // the only reason for this to happen if we changed the building mechanics and did an error
                 logger.error("Failed to send Slack notification due to invalid blocks: $payload")
+            } else if (error == "not_in_channel") {
+                logger.error("Failed to send Slack notification due to bot not in channel (please add the bot to the channel): $payload")
+            } else if (error == "channel_not_found") {
+                logger.error("Failed to send Slack notification due to channel not found (check the channel you specified): $payload")
             } else {
-                logger.error("Slack notification failed — status: ${response.status}, body: $bodyAsText")
+                logger.error("Slack notification failed — status: ${response.status}, body: $responseJson")
             }
         }.onFailure {
             logger.error("Slack notification error", it)
