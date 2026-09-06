@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS slack_list_columns ("key" VARCHAR(64) PRIMARY KEY, column_id VARCHAR(64) NOT NULL);
