@@ -105,6 +105,13 @@ object Config {
         canBeSetByEnv = true
     )
 
+    val SLACK_LIST_OWNER_ID: String by string(
+        key = "slack.list.owner.id",
+        default = "",
+        description = "The Slack user id which will be owner of the created list",
+        canBeSetByEnv = true
+    )
+
     val SLACK_USER_OAUTH_TOKEN: String by string(
         key = "slack.user.oauth.token",
         default = "",
