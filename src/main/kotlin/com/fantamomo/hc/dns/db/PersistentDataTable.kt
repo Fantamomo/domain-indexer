@@ -6,7 +6,7 @@ import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.select
-import org.jetbrains.exposed.v1.r2dbc.update
+import org.jetbrains.exposed.v1.r2dbc.upsert
 
 object PersistentDataTable : Table("persistent_data") {
     val name = varchar("name", 255)
@@ -26,7 +26,8 @@ object PersistentDataTable : Table("persistent_data") {
         require(name.length <= 255) { "Name cannot exceed 255 characters" }
         require(value.length <= 255) { "Value cannot exceed 255 characters" }
         DatabaseManager.transaction {
-            update({ PersistentDataTable.name eq name }) {
+            upsert(PersistentDataTable.name) {
+                it[PersistentDataTable.name] = name
                 it[PersistentDataTable.value] = value
             }
         }
