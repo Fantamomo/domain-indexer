@@ -7,18 +7,18 @@ import com.fantamomo.hc.dns.db.RecordTable
 import com.fantamomo.hc.dns.db.SiteCheckerIgnoreListTable
 import com.fantamomo.hc.dns.manager.DatabaseManager
 import com.fantamomo.hc.dns.model.SiteCheckResult
+import com.fantamomo.hc.dns.model.SiteProblem
 import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordState
 import com.fantamomo.hc.dns.model.dns.RecordType
-import io.ktor.client.request.*
+import com.fantamomo.hc.dns.task.sc.SlackSiteCheckerConnector
 import io.ktor.http.*
 import io.ktor.network.sockets.SocketTimeoutException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.io.IOException
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import okhttp3.*
 import okhttp3.internal.platform.Platform
 import org.jetbrains.exposed.v1.core.and
@@ -35,10 +35,10 @@ import java.security.cert.CertificateNotYetValidException
 import java.security.cert.X509Certificate
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.concurrent.Semaphore
 import javax.net.ssl.*
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -154,9 +154,15 @@ object SiteChecker {
     }
 
     suspend fun start() {
-        if (!running.compareAndSet(false, true)) {
+        if (Config.SLACK_BOT_TOKEN.isBlank()) {
+            throw IllegalStateException("SLACK_BOT_TOKEN is not set")
+        }
+
+        if (!running.compareAndSet(expectedValue = false, newValue = true)) {
             throw IllegalStateException("Site checker is already running")
         }
+
+        SlackSiteCheckerConnector.start()
 
         logger.info("Site checker started")
 
@@ -180,6 +186,7 @@ object SiteChecker {
         while (currentCoroutineContext().isActive) {
             try {
                 checkSites()
+                logger.info("Site checker run completed")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -191,6 +198,9 @@ object SiteChecker {
     }
 
     private suspend fun checkSites() = coroutineScope {
+
+        SharedConstants.workSynchronizer.waitUntilUnlocked()
+
         val sites = DatabaseManager.transaction {
             RecordTable
                 .select(
@@ -274,47 +284,79 @@ object SiteChecker {
         val limiter = TargetLimiter()
 
         sites.map { site ->
+            SharedConstants.workSynchronizer.waitUntilUnlocked()
             async(Dispatchers.IO) {
                 limiter.awaitRateLimit()
 
                 limiter.semaphore.acquire()
                 try {
-                    while (!globalSemaphore.tryAcquire()) {
-                        currentCoroutineContext().ensureActive()
-                        delay(GLOBAL_RETRY_DELAY)
-                    }
+                    globalSemaphore.acquire()
 
                     try {
-                        logger.info("Checking site: ${site.host}")
+                        SharedConstants.workSynchronizer.waitUntilUnlocked()
+                        logger.info("Checking site: ${site.host}") // todo: remove this line
 
                         @Suppress("HttpUrlsUsage")
                         val result = checkSite("http://${site.host}/")
 
                         when (result) {
                             is SiteCheckResult.Failure -> {
-                                if ("._domainkey." in site.host && site.type == RecordType.CNAME && result.type == SiteProblemType.DNS_UNAVAILABLE) {
-                                    // this is mostly a DKIM record, which will never resolve to an IP address
-                                    // so we just ignore it
-                                    logger.info("Skipping alert for site ${site.host} because it is a DKIM record")
+                                var skip = false
+                                if (site.type == RecordType.CNAME && result.type == SiteProblemType.DNS_UNAVAILABLE) {
+                                    skip = true
+                                    // the following skip records are mostly CNAME verification records which will never resolve to an IP address
+                                    // so we just ignore them
+                                    val t = site.target
+                                    if ("._domainkey." in site.host) {
+                                        logger.info("Skipping alert for site ${site.host} because it is a DKIM record")
+                                    } else if (t.endsWith(".acme.tier2.infra.hackclub.dev.")) {
+                                        logger.info("Skipping alert for site ${site.host} because it is an Vercel (hackclub.dev) ACME validation record")
+                                    } else if (t.endsWith(".dcv.cloudflare.com.")) {
+                                        logger.info("Skipping alert for site ${site.host} because it is an DCV-Cloudflare validation record")
+                                    } else if (t.endsWith("._acme.deno.net.")) {
+                                        logger.info("Skipping alert for site ${site.host} because it is an ACME validation record")
+                                    } else if (t.endsWith(".sectigo.com.") && t.matches(Regex("[A-Fa-f0-9]{32}\\.[A-Fa-f0-9]{32}(?:\\.[A-Za-z0-9_-]+)?\\.sectigo\\.com\\."))) {
+                                        logger.info("Skipping alert for site ${site.host} because it is an Sectigo validation record")
+                                    } else if (t.endsWith(".sendgrid.net.") && t.matches(Regex("u\\d+\\.wl\\d+\\.sendgrid\\.net\\."))) {
+                                        logger.info("Skipping alert for site ${site.host} because it is a SendGrid validation record")
+                                    } else if (t.endsWith(".acm-validations.aws.")) {
+                                        logger.info("Skipping alert for site ${site.host} because it is an ACM validation record")
+                                    } else {
+                                        skip = false
+                                    }
+                                }
+                                if (skip) {
+                                    scope.launch {
+                                        SlackSiteCheckerConnector.success(site.host)
+                                    }
                                     return@async
                                 }
-                                SharedConstants.client.post("https://slack.com/api/chat.postMessage") {
-                                    bearerAuth(Config.SLACK_BOT_TOKEN)
-                                    contentType(ContentType.Application.Json)
-                                    setBody(buildJsonObject {
-                                        put("channel", Config.SLACK_CHANNEL_FOR_ALERTS)
-                                        put("text", """
-                                            Problem found!
-                                            Site: ${site.host}
-                                            Record Type: ${site.type}
-                                            Record Target: ${site.target}
-                                            Type: ${result.type}
-                                            Details:
-                                        """.trimIndent() + " ${result.details}")
-                                    })
+                                val exceptionStr = when {
+                                    result.exceptionType != null && result.exceptionMessage != null -> "${result.exceptionType}: ${result.exceptionMessage}"
+                                    result.exceptionType != null -> result.exceptionType
+                                    result.exceptionMessage != null -> result.exceptionMessage
+                                    else -> null
+                                }
+                                val problem = SiteProblem(
+                                    site = site.host,
+                                    problem = result.type,
+                                    recordType = site.type,
+                                    recordTarget = site.target,
+                                    url = Url("http://${site.host}/"),
+                                    details = result.details,
+                                    remoteAddress = result.remoteAddress,
+                                    exception = exceptionStr,
+                                    techFacts = result.techFacts,
+                                )
+                                scope.launch {
+                                    SlackSiteCheckerConnector.problem(problem)
                                 }
                             }
-                            SiteCheckResult.Success -> { /* Do nothing */ }
+                            SiteCheckResult.Success -> {
+                                scope.launch {
+                                    SlackSiteCheckerConnector.success(site.host)
+                                }
+                            }
                         }
                     } catch (e: CancellationException) {
                         throw e
@@ -379,6 +421,7 @@ object SiteChecker {
             return failure(
                 SiteProblemType.TOO_MANY_REDIRECTS,
                 buildRedirectDetails(redirects),
+                context = context,
             )
         }
 
@@ -402,7 +445,8 @@ object SiteChecker {
                 buildHttpDetails(
                     response,
                     "The server reported that the requested deployment could not be found.",
-                )
+                ),
+                context = context,
             )
         }
 
@@ -464,7 +508,9 @@ object SiteChecker {
                     context,
                     exception,
                     "The server presented a TLS certificate that has expired.",
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -476,7 +522,9 @@ object SiteChecker {
                     context,
                     exception,
                     "The server presented a TLS certificate that is not yet valid.",
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -491,7 +539,9 @@ object SiteChecker {
                     context,
                     exception,
                     "The TLS certificate presented by the server does not match the requested hostname.",
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -503,7 +553,9 @@ object SiteChecker {
                     context,
                     exception,
                     "The TLS certificate presented by the server could not be verified.",
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -518,7 +570,9 @@ object SiteChecker {
                     context,
                     exception,
                     "The TLS handshake could not be completed.",
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -529,7 +583,9 @@ object SiteChecker {
                     url,
                     context,
                     exception,
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -553,7 +609,9 @@ object SiteChecker {
                     url,
                     context,
                     exception,
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -564,7 +622,9 @@ object SiteChecker {
                     url,
                     context,
                     exception,
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -575,7 +635,9 @@ object SiteChecker {
                     url,
                     context,
                     exception,
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -592,7 +654,9 @@ object SiteChecker {
                         url,
                         context,
                         exception,
-                    )
+                    ),
+                    exception,
+                    context,
                 )
             }
 
@@ -602,7 +666,9 @@ object SiteChecker {
                     url,
                     context,
                     exception,
-                )
+                ),
+                exception,
+                context,
             )
         }
 
@@ -612,7 +678,9 @@ object SiteChecker {
                 url,
                 context,
                 exception,
-            )
+            ),
+            exception,
+            context,
         )
     }
 
@@ -646,6 +714,10 @@ object SiteChecker {
             .followRedirects(true)
             .followSslRedirects(true)
             .eventListener(createEventListener(context))
+            .connectTimeout(1.minutes)
+            .readTimeout(1.minutes)
+            .writeTimeout(1.minutes)
+//            .callTimeout(120, TimeUnit.SECONDS) // call means the complete call from DNS resolution, connecting to writing and reading
             .build()
     }
 
@@ -731,10 +803,35 @@ object SiteChecker {
     private fun failure(
         type: SiteProblemType,
         details: String,
+        exception: Throwable? = null,
+        context: CheckContext? = null,
     ) = SiteCheckResult.Failure(
         type = type,
         details = details,
+        exceptionType = exception?.let { it::class.java.name },
+        exceptionMessage = exception?.message,
+        remoteAddress = context?.connectedAddress?.let { "${it.address.hostAddress}:${it.port}" },
+        techFacts = buildTechFacts(context),
     )
+
+    private fun buildTechFacts(context: CheckContext?): String? {
+        if (context == null) return null
+        val facts = mutableListOf<String>()
+        if (context.dnsAddresses.isNotEmpty()) {
+            facts += "DNS: " + context.dnsAddresses.joinToString(", ") { it.hostAddress }
+        }
+        context.connectedAddress?.let {
+            facts += "Remote: ${it.address.hostAddress}:${it.port}"
+        }
+        context.protocol?.let {
+            facts += "Protocol: $it"
+        }
+        context.handshake?.let {
+            facts += "TLS: ${it.tlsVersion}, Cipher: ${it.cipherSuite}"
+        }
+        if (facts.isEmpty()) return null
+        return facts.joinToString("; ")
+    }
 
     private fun isHostnameMismatch(
         exception: Throwable,
@@ -1017,7 +1114,8 @@ object SiteChecker {
                 buildCertificateExpiryDetails(
                     response,
                     certificate,
-                )
+                ),
+                context = context,
             )
         }
 
@@ -1031,7 +1129,8 @@ object SiteChecker {
                 buildCertificateExpiryDetails(
                     response,
                     certificate,
-                )
+                ),
+                context = context,
             )
         }
 
