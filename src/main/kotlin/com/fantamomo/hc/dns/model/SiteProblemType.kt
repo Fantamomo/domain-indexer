@@ -100,7 +100,7 @@ enum class SiteProblemType(
     TLS_CERTIFICATE_EXPIRING(
         "TLS certificate expiring",
         "tls_certificate_expiring",
-        "orange",
+        "blue",
         SiteProblemSeverity.INFO
     ),
 
