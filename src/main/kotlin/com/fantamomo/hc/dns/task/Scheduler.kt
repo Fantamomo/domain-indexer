@@ -77,7 +77,11 @@ object Scheduler {
             try {
                 logger.info("Running scheduled tasks")
                 val duration = measureTime {
-                    runTask()
+                    // we running the tasks in the workSynchronizer lock
+                    // new site checker in SiteChecker will wait for the lock to finish before running again
+                    SharedConstants.workSynchronizer.withLock {
+                        runTask()
+                    }
                 }
                 errorCount = (errorCount--).coerceAtLeast(0)
                 val toDelay = (TIME_BETWEEN_RUNS - duration).takeIf { it.isPositive() } ?: Duration.ZERO
