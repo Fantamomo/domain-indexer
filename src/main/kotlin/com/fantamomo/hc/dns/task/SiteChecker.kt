@@ -200,7 +200,7 @@ object SiteChecker {
                     RecordTable.currentValue,
                 )
                 .where {
-                    RecordTable.type inList RecordType.CHECKABLE and
+                    RecordTable.type inList RecordType.checkable and
                             (RecordTable.state eq RecordState.ACTIVE) and
                             notExists(
                                 SiteCheckerIgnoreListTable
