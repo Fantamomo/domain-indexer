@@ -9,10 +9,14 @@ class SiteProblem(
     val recordType: RecordType, // only A, AAAA, CNAME or ALIAS
     val recordTarget: String,
     val url: Url,
-    val details: String
+    val details: String,
+    val remoteAddress: String? = null,
+    val exception: String? = null,
+    val techFacts: String? = null
 ) {
+    val severity: SiteProblemSeverity get() = problem.severity
+
     init {
         require(recordType in RecordType.checkable) { "Record type must be in ${RecordType.checkable}" }
-
     }
 }
