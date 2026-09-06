@@ -6,6 +6,7 @@ import com.fantamomo.hc.dns.task.InitTask
 import com.fantamomo.hc.dns.task.Scheduler
 import com.fantamomo.hc.dns.task.SiteChecker
 import com.fantamomo.hc.dns.task.init.*
+import com.fantamomo.hc.dns.task.sc.SlackSiteCheckerConnector
 import com.fantamomo.hc.dns.util.humanReadable
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -57,6 +58,9 @@ object App {
         val startTask = launch { startInitTask() }
         launch { startServer() }
         startTask.join() // we wait for the init tasks to complete before starting the scheduler
+        launch {
+            SlackSiteCheckerConnector.start()
+        }
         launch {
             Scheduler.start()
         }
