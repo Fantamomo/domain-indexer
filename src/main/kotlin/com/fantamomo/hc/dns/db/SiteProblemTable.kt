@@ -9,6 +9,7 @@ import org.jetbrains.exposed.v1.datetime.timestamp
 object SiteProblemTable : Table("site_problems") {
     val site = varchar("site", 255)
     val itemId = varchar("item_id", 64)
+    val key = varchar("key", 255)
     val problem = enumerationByName<SiteProblemType>("problem", 64)
     val severity = enumerationByName<SiteProblemSeverity>("severity", 32)
     val recordType = enumerationByName<RecordType>("record_type", 16)
@@ -23,6 +24,7 @@ object SiteProblemTable : Table("site_problems") {
 
     init {
         index(true, itemId)
+        index(false, key)
     }
 
     override val primaryKey = PrimaryKey(site)

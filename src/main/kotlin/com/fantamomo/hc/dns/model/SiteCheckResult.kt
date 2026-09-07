@@ -10,5 +10,6 @@ sealed interface SiteCheckResult {
         val exceptionMessage: String? = null,
         val remoteAddress: String? = null,
         val techFacts: String? = null,
+        val key: String
     ) : SiteCheckResult
 }
