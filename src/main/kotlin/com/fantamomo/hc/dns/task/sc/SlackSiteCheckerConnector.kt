@@ -11,6 +11,8 @@ import com.fantamomo.hc.dns.model.SiteProblem
 import com.fantamomo.hc.dns.model.SiteProblemSeverity
 import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordType
+import com.fantamomo.hc.dns.util.DestructuringComponent
+import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -34,7 +36,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.nanoseconds
 
 // The list in slack looks the following (format: `"<name>"("<id>"): <type><metadata (optional)>; <description>`):
-// "Site"("site"): text, primary column; contains the site name (e.g., "example.com")
+// "Site"("name"): text, primary column; contains the site name (e.g., "example.com")
 // "Severity"("severity"): options(com.fantamomo.hc.dns.model.SiteProblemSeverity); the severity of the problem
 // "Problem"("problems")): options(com.fantamomo.hc.dns.model.SiteProblemType); the type of the problem
 // "Record Type"("record_type"): options(com.fantamomo.hc.dns.model.dns.RecordType); the type of the record
@@ -57,20 +59,30 @@ object SlackSiteCheckerConnector {
 
     private const val PERSISTENT_LIST_ID_KEY = "slack_site_checker_list_id"
 
-    private class RateLimiter(maxRequestsPerSecond: Int) {
-        private val intervalNanos = 1_000_000_000L / maxRequestsPerSecond
+    private class RateLimiter(maxRequestsPerMinute: Int) {
+        init {
+            require(maxRequestsPerMinute > 0) {
+                "maxRequestsPerMinute must be greater than 0"
+            }
+        }
+
+        private val intervalNanos =
+            60_000_000_000L / maxRequestsPerMinute
+
         private val lock = Any()
 
-        @Volatile
         private var nextRequestAt = System.nanoTime()
 
         suspend fun awaitRateLimit() {
             val delayNanos = synchronized(lock) {
                 val now = System.nanoTime()
-                val waitNanos = nextRequestAt - now
-                nextRequestAt = maxOf(nextRequestAt + intervalNanos, now)
-                waitNanos
+                val scheduledAt = maxOf(nextRequestAt, now)
+
+                nextRequestAt = scheduledAt + intervalNanos
+
+                scheduledAt - now
             }
+
             if (delayNanos > 0) {
                 delay(delayNanos.nanoseconds)
             }
@@ -79,6 +91,8 @@ object SlackSiteCheckerConnector {
 
     private val createUpdateLimiter = RateLimiter(50)
     private val deleteLimiter = RateLimiter(20)
+    private val deleteMultiLimiter = RateLimiter(20)
+    private val postMessageLimiter = RateLimiter(60)
 
     private val deleteChannel = Channel<String>(Channel.BUFFERED)
 
@@ -140,10 +154,35 @@ object SlackSiteCheckerConnector {
                 SiteProblemTable.select(
                     SiteProblemTable.site,
                     SiteProblemTable.itemId,
+                    SiteProblemTable.problem,
+                    SiteProblemTable.recordType,
+                    SiteProblemTable.recordTarget,
+                    SiteProblemTable.endpoint,
+                    SiteProblemTable.remoteAddress,
+                    SiteProblemTable.exception,
+                    SiteProblemTable.key,
                     SiteProblemTable.firstOccurred
                 )
                     .where { SiteProblemTable.site eq problem.site }
                     .singleOrNull()
+                    ?.let {
+                        Triple(
+                            it[SiteProblemTable.itemId],
+                            it[SiteProblemTable.firstOccurred],
+                            SiteProblem(
+                                site = it[SiteProblemTable.site],
+                                problem = it[SiteProblemTable.problem],
+                                recordType = it[SiteProblemTable.recordType],
+                                recordTarget = it[SiteProblemTable.recordTarget],
+                                url = Url(it[SiteProblemTable.endpoint]),
+                                details = "<<<details not existing on SiteProblem retrieved from db for reference>>>",
+                                remoteAddress = it[SiteProblemTable.remoteAddress],
+                                exception = it[SiteProblemTable.exception],
+                                techFacts = "<<<techFacts not existing on SiteProblem retrieved from db for reference>>>",
+                                key = it[SiteProblemTable.key]
+                            )
+                        )
+                    }
             }
 
             val now = Clock.System.now()
@@ -166,10 +205,13 @@ object SlackSiteCheckerConnector {
 
                 val itemId = createSlackListItem(listId, fields) ?: return
 
+                sendNewProblemMessage(problem, itemId, listId)
+
                 database {
                     SiteProblemTable.insert {
                         it[SiteProblemTable.site] = problem.site
                         it[SiteProblemTable.itemId] = itemId
+                        it[SiteProblemTable.key] = problem.key
                         it[SiteProblemTable.problem] = problem.problem
                         it[SiteProblemTable.severity] = problem.severity
                         it[SiteProblemTable.recordType] = problem.recordType
@@ -184,8 +226,9 @@ object SlackSiteCheckerConnector {
                     }
                 }
             } else {
-                val itemId = existing[SiteProblemTable.itemId]
-                val firstOccurred = existing[SiteProblemTable.firstOccurred]
+                val itemId = existing.first
+                val firstOccurred = existing.second
+                val existingProblem = existing.third
                 val days = maxOf(0L, (now - firstOccurred).inWholeDays)
                 val firstOccurredDate = firstOccurred.toLocalDateTime(TimeZone.UTC).date.toString()
                 val problemSince = "$days days"
@@ -199,10 +242,15 @@ object SlackSiteCheckerConnector {
                         problemSince = problemSince
                     )
                     updateSlackListItem(listId, cells)
+
+                    if (existingProblem.isDifferentFrom(problem)) {
+                        sendUpdateProblemMessage(problem, itemId, listId)
+                    }
                 }
 
                 database {
                     SiteProblemTable.update({ SiteProblemTable.site eq problem.site }) {
+                        it[SiteProblemTable.key] = problem.key
                         it[SiteProblemTable.problem] = problem.problem
                         it[SiteProblemTable.severity] = problem.severity
                         it[SiteProblemTable.recordType] = problem.recordType
@@ -223,48 +271,35 @@ object SlackSiteCheckerConnector {
         }
     }
 
-    suspend fun problem(
-        site: String,
-        problem: SiteProblemType,
-        recordType: RecordType,
-        recordTarget: String,
-        endpoint: Url,
-        details: String,
-        remoteAddress: String? = null,
-        exception: String? = null,
-        techFacts: String? = null
-    ) {
-        problem(
-            SiteProblem(
-                site = site,
-                problem = problem,
-                recordType = recordType,
-                recordTarget = recordTarget,
-                url = endpoint,
-                details = details,
-                remoteAddress = remoteAddress,
-                exception = exception,
-                techFacts = techFacts
-            )
-        )
-    }
-
     // call this method when a site does not produce any problems
     // if the site was previously a problem, it will be removed from the database and the list item will be deleted
     // if the site was not previously a problem, nothing will happen
     suspend fun success(site: String) {
         try {
-            val existing = database {
-                SiteProblemTable.select(SiteProblemTable.itemId)
+            val (site, itemId, url, problemType) = database {
+                SiteProblemTable.select(
+                    SiteProblemTable.site,
+                    SiteProblemTable.itemId,
+                    SiteProblemTable.endpoint,
+                    SiteProblemTable.problem,
+                )
                     .where { SiteProblemTable.site eq site }
                     .singleOrNull()
+                    ?.let {
+                        DestructuringComponent(
+                            it[SiteProblemTable.site],
+                            it[SiteProblemTable.itemId],
+                            it[SiteProblemTable.endpoint],
+                            it[SiteProblemTable.problem]
+                        )
+                    }
             } ?: return
-
-            val itemId = existing[SiteProblemTable.itemId]
 
             database {
                 SiteProblemTable.deleteWhere { SiteProblemTable.site eq site }
             }
+
+            sendNoLongerProblemMessage(Url(url), site, problemType)
 
             if (running.load()) {
                 val sent = deleteChannel.trySend(itemId).isSuccess
@@ -333,7 +368,7 @@ object SlackSiteCheckerConnector {
                     put("name", "Site Checker Issues")
                     putJsonArray("schema") {
                         add(buildJsonObject {
-                            put("key", "site")
+                            put("key", "name")
                             put("name", "Site")
                             put("type", "text")
                             put("is_primary_column", true)
@@ -535,6 +570,196 @@ object SlackSiteCheckerConnector {
         }
     }
 
+    private suspend fun sendNewProblemMessage(problem: SiteProblem, itemId: String, listId: String) =
+        postMessage(buildJsonObject {
+            putJsonArray("blocks") {
+                addJsonObject {
+                    put("type", "rich_text")
+                    putJsonArray("elements") {
+                        addJsonObject {
+                            put("type", "rich_text_section")
+                            putJsonArray("elements") {
+                                addJsonObject {
+                                    put("type", "emoji")
+                                    put("name", "siren1")
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " Site problem detected: ")
+                                    putJsonObject("style") { put("bold", true) }
+                                }
+                                addJsonObject {
+                                    put("type", "link")
+                                    put("url", problem.url.toString())
+                                    put("text", problem.site)
+                                    put("truncated", true)
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " ")
+                                }
+                                addJsonObject {
+                                    put("type", "tag")
+                                    put("text", "(${problem.problem.slackOptionName})")
+                                    put("color", problem.problem.slackColor)
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " ")
+                                }
+                                addJsonObject {
+                                    put("type", "list_record")
+                                    put("file_id", listId)
+                                    put("record_id", itemId)
+                                    put("text", "View in Lists")
+                                    put("url", "https://hackclub.enterprise.slack.com/lists/T0266FRGM/$listId?record_id=$itemId")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        })
+
+    private suspend fun sendUpdateProblemMessage(problem: SiteProblem, itemId: String, listId: String) =
+        postMessage(buildJsonObject {
+            putJsonArray("blocks") {
+                addJsonObject {
+                    put("type", "rich_text")
+                    putJsonArray("elements") {
+                        addJsonObject {
+                            put("type", "rich_text_section")
+                            putJsonArray("elements") {
+                                addJsonObject {
+                                    put("type", "emoji")
+                                    put("name", "arrows_counterclockwise")
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " Site problem updated: ")
+                                    putJsonObject("style") { put("bold", true) }
+                                }
+                                addJsonObject {
+                                    put("type", "link")
+                                    put("url", problem.url.toString())
+                                    put("text", problem.site)
+                                    put("truncated", true)
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " ")
+                                }
+                                addJsonObject {
+                                    put("type", "tag")
+                                    put("text", "(${problem.problem.slackOptionName})")
+                                    put("color", problem.problem.slackColor)
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " ")
+                                }
+                                addJsonObject {
+                                    put("type", "list_record")
+                                    put("file_id", listId)
+                                    put("record_id", itemId)
+                                    put("text", "View in Lists")
+                                    put("url", "https://hackclub.enterprise.slack.com/lists/T0266FRGM/$listId?record_id=$itemId")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+    private suspend fun sendNoLongerProblemMessage(
+        problemUrl: Url,
+        problemSite: String,
+        problemType: SiteProblemType
+    ) = postMessage(buildJsonObject {
+        putJsonArray("blocks") {
+            addJsonObject {
+                put("type", "rich_text")
+                putJsonArray("elements") {
+                    addJsonObject {
+                        put("type", "rich_text_section")
+                        putJsonArray("elements") {
+                            addJsonObject {
+                                put("type", "emoji")
+                                put("name", "white_check_mark")
+                            }
+                            addJsonObject {
+                                put("type", "text")
+                                put("text", " Site problem resolved: ")
+                                putJsonObject("style") { put("bold", true) }
+                            }
+                            addJsonObject {
+                                put("type", "link")
+                                put("url", problemUrl.toString())
+                                put("text", problemSite)
+                                put("truncated", true)
+                            }
+                            addJsonObject {
+                                put("type", "text")
+                                put("text", " ")
+                            }
+                            addJsonObject {
+                                put("type", "tag")
+                                put("text", "(${problemType.slackOptionName})")
+                                put("color", problemType.slackColor)
+                            }
+                            addJsonObject {
+                                put("type", "text")
+                                put("text", " is no longer a problem.")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+
+
+    private suspend fun postMessage(payload: JsonObject) {
+        val slackChannelForAlerts = Config.SLACK_CHANNEL_FOR_ALERTS
+        if (slackChannelForAlerts.isBlank()) return
+
+        postMessageLimiter.awaitRateLimit()
+
+        val payloadMap = payload.toMutableMap()
+        payloadMap["channel"] = JsonPrimitive(slackChannelForAlerts)
+        payloadMap.putIfAbsent("unfurl_links", JsonPrimitive(false))
+        payloadMap.putIfAbsent("unfurl_media", JsonPrimitive(false))
+        val payloadJson = JsonObject(payloadMap)
+        runCatching {
+            val response = SharedConstants.client.post("https://slack.com/api/chat.postMessage") {
+                bearerAuth(Config.SLACK_BOT_TOKEN)
+                contentType(ContentType.Application.Json)
+                setBody(payloadJson)
+            }
+            val responseJson = response.body<JsonObject>()
+            if (response.status.isSuccess() && (responseJson["ok"] as? JsonPrimitive)?.booleanOrNull == true) {
+//                logger.info("Slack notification sent successfully")
+                return@runCatching
+            }
+            val error = (responseJson["error"] as? JsonPrimitive)?.contentOrNull
+            if (response.status.value == 400 && error == "invalid_blocks") {
+                // this should never happen in a production environment,
+                // the only reason for this to happen if we changed the building mechanics and did an error
+                logger.error("Failed to send Slack notification due to invalid blocks: $payload")
+            } else if (error == "not_in_channel") {
+                logger.error("Failed to send Slack notification due to bot not in channel (please add the bot to the channel): $payload")
+            } else if (error == "channel_not_found") {
+                logger.error("Failed to send Slack notification due to channel not found (check the channel you specified): $payload")
+            } else {
+                logger.error("Slack notification failed — status: ${response.status}, body: $responseJson")
+            }
+        }.onFailure {
+            logger.error("Slack notification error", it)
+        }
+    }
+
     private fun buildRichTextValue(text: String): JsonArray {
         return buildJsonArray {
             add(buildJsonObject {
@@ -581,7 +806,7 @@ object SlackSiteCheckerConnector {
         problemSince: String
     ): JsonArray {
         return buildJsonArray {
-            getColumnId("site")?.let { colId ->
+            getColumnId("name")?.let { colId ->
                 add(buildJsonObject {
                     put("column_id", colId)
                     put("rich_text", buildRichTextValue(problem.site))
@@ -669,7 +894,7 @@ object SlackSiteCheckerConnector {
         problemSince: String
     ): JsonArray {
         return buildJsonArray {
-            getColumnId("site")?.let { colId ->
+            getColumnId("name")?.let { colId ->
                 add(buildJsonObject {
                     put("column_id", colId)
                     put("row_id", rowId)
@@ -838,11 +1063,11 @@ object SlackSiteCheckerConnector {
 
     private suspend fun flushDeletions(itemIds: List<String>) {
         if (itemIds.isEmpty()) return
-        deleteLimiter.awaitRateLimit()
         val listId = getOrCreateSlackListId() ?: return
 
         try {
             if (itemIds.size == 1) {
+                deleteLimiter.awaitRateLimit()
                 val response = SharedConstants.client.post("https://slack.com/api/slackLists.items.delete") {
                     bearerAuth(Config.SLACK_BOT_TOKEN)
                     contentType(ContentType.Application.Json)
@@ -857,16 +1082,18 @@ object SlackSiteCheckerConnector {
                     logger.error("Failed to delete Slack list item ${itemIds.first()}: $text")
                 }
             } else {
-                val response = SharedConstants.client.post("https://slack.com/api/slackLists.items.deleteMultiple") {
-                    bearerAuth(Config.SLACK_BOT_TOKEN)
-                    contentType(ContentType.Application.Json)
-                    setBody(buildJsonObject {
-                        put("list_id", listId)
-                        putJsonArray("ids") {
-                            itemIds.forEach { add(JsonPrimitive(it)) }
-                        }
-                    })
-                }
+                deleteMultiLimiter.awaitRateLimit()
+                val response =
+                    SharedConstants.client.post("https://slack.com/api/slackLists.items.deleteMultiple") {
+                        bearerAuth(Config.SLACK_BOT_TOKEN)
+                        contentType(ContentType.Application.Json)
+                        setBody(buildJsonObject {
+                            put("list_id", listId)
+                            putJsonArray("ids") {
+                                itemIds.forEach { add(JsonPrimitive(it)) }
+                            }
+                        })
+                    }
                 val text = response.bodyAsText()
                 val json = Json.parseToJsonElement(text).jsonObject
                 if (json["ok"]?.jsonPrimitive?.booleanOrNull != true) {
