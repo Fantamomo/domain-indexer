@@ -1401,42 +1401,6 @@ object SiteChecker {
             }
     }
 
-    private fun buildTlsFailureDetails(
-        url: String,
-        context: CheckContext,
-        exception: Throwable,
-        description: String,
-    ): String {
-
-        return description
-    }
-
-    private fun buildDnsFailureDetails(
-        url: String,
-        context: CheckContext,
-        exception: Throwable,
-    ): String {
-
-        return "The hostname could not be resolved to an IP address."
-    }
-
-    private fun buildConnectionFailureDetails(
-        url: String,
-        context: CheckContext,
-        exception: Throwable,
-    ): String {
-
-        return "The connection to the server could not be established."
-    }
-
-    private fun buildHttpDetails(
-        response: Response,
-        description: String,
-    ): String {
-
-        return description
-    }
-
     private fun redirectChain(
         response: Response,
     ): List<Response> {
