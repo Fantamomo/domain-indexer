@@ -232,6 +232,7 @@ object SiteChecker {
                         // we are not able to really check wildcard records, so we just skip them
                         return@mapNotNull null
                     }
+
                     val currentValue = it[RecordTable.currentValue]
 
                     val target = currentValue?.value
@@ -285,6 +286,7 @@ object SiteChecker {
 
         sites.map { site ->
             SharedConstants.workSynchronizer.waitUntilUnlocked()
+
             async(Dispatchers.IO) {
                 limiter.awaitRateLimit()
 
@@ -302,11 +304,13 @@ object SiteChecker {
                         when (result) {
                             is SiteCheckResult.Failure -> {
                                 var skip = false
+
                                 if (site.type == RecordType.CNAME && result.type == SiteProblemType.DNS_UNAVAILABLE) {
                                     skip = true
                                     // the following skip records are mostly CNAME verification records which will never resolve to an IP address
                                     // so we just ignore them
                                     val t = site.target
+
                                     if ("._domainkey." in site.host) {
                                         logger.info("Skipping alert for site ${site.host} because it is a DKIM record")
                                     } else if (t.endsWith(".acme.tier2.infra.hackclub.dev.")) {
@@ -325,18 +329,28 @@ object SiteChecker {
                                         skip = false
                                     }
                                 }
+
                                 if (skip) {
                                     scope.launch {
                                         SlackSiteCheckerConnector.success(site.host)
                                     }
                                     return@async
                                 }
+
                                 val exceptionStr = when {
-                                    result.exceptionType != null && result.exceptionMessage != null -> "${result.exceptionType}: ${result.exceptionMessage}"
-                                    result.exceptionType != null -> result.exceptionType
-                                    result.exceptionMessage != null -> result.exceptionMessage
-                                    else -> null
+                                    result.exceptionType != null && result.exceptionMessage != null ->
+                                        "${result.exceptionType}: ${result.exceptionMessage}"
+
+                                    result.exceptionType != null ->
+                                        result.exceptionType
+
+                                    result.exceptionMessage != null ->
+                                        result.exceptionMessage
+
+                                    else ->
+                                        null
                                 }
+
                                 val problem = SiteProblem(
                                     site = site.host,
                                     problem = result.type,
@@ -347,11 +361,14 @@ object SiteChecker {
                                     remoteAddress = result.remoteAddress,
                                     exception = exceptionStr,
                                     techFacts = result.techFacts,
+                                    key = result.key,
                                 )
+
                                 scope.launch {
                                     SlackSiteCheckerConnector.problem(problem)
                                 }
                             }
+
                             SiteCheckResult.Success -> {
                                 scope.launch {
                                     SlackSiteCheckerConnector.success(site.host)
@@ -419,8 +436,10 @@ object SiteChecker {
 
         if (redirects.size > 20) {
             return failure(
-                SiteProblemType.TOO_MANY_REDIRECTS,
-                buildRedirectDetails(redirects),
+                type = SiteProblemType.TOO_MANY_REDIRECTS,
+                details = "The request exceeded the maximum allowed number of redirects.",
+                key = "",
+                techFacts = buildRedirectTechFacts(redirects),
                 context = context,
             )
         }
@@ -441,10 +460,12 @@ object SiteChecker {
             )
         ) {
             return failure(
-                SiteProblemType.SERVICE_NOT_FOUND,
-                buildHttpDetails(
+                type = SiteProblemType.SERVICE_NOT_FOUND,
+                details = "The requested deployment could not be found on the server.",
+                key = "",
+                techFacts = buildHttpTechFacts(
                     response,
-                    "The server reported that the requested deployment could not be found.",
+                    "Vercel reported that the requested deployment could not be found.",
                 ),
                 context = context,
             )
@@ -458,7 +479,7 @@ object SiteChecker {
 //                        response,
 //                        "The server returned an HTTP server error.",
 //                    )
-//                )
+//                }
 //            }
 //
 //            response.code in 400..499 -> {
@@ -497,34 +518,39 @@ object SiteChecker {
 
         val c = generateSequence<Throwable>(exception) { it.cause }.toList()
 
-
         val certificate = context.certificateChain.firstOrNull()
 
         if (c.has<CertificateExpiredException>()) {
+            val expiry = certificate?.notAfter?.toInstant()
+
             return failure(
-                SiteProblemType.TLS_CERTIFICATE_EXPIRED,
-                buildTlsFailureDetails(
+                type = SiteProblemType.TLS_CERTIFICATE_EXPIRED,
+                details = buildCertificateExpiredDetails(expiry),
+                key = buildCertificateExpiryKey(certificate),
+                techFacts = buildTlsTechFacts(
                     url,
                     context,
                     exception,
-                    "The server presented a TLS certificate that has expired.",
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         if (c.has<CertificateNotYetValidException>()) {
+            val validFrom = certificate?.notBefore?.toInstant()
+
             return failure(
-                SiteProblemType.TLS_CERTIFICATE_NOT_YET_VALID,
-                buildTlsFailureDetails(
+                type = SiteProblemType.TLS_CERTIFICATE_NOT_YET_VALID,
+                details = buildCertificateNotYetValidDetails(validFrom),
+                key = buildCertificateNotYetValidKey(certificate),
+                techFacts = buildTlsTechFacts(
                     url,
                     context,
                     exception,
-                    "The server presented a TLS certificate that is not yet valid.",
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
@@ -533,29 +559,31 @@ object SiteChecker {
             isHostnameMismatch(exception)
         ) {
             return failure(
-                SiteProblemType.TLS_CERTIFICATE_HOSTNAME_MISMATCH,
-                buildTlsFailureDetails(
+                type = SiteProblemType.TLS_CERTIFICATE_HOSTNAME_MISMATCH,
+                details = "The TLS certificate does not match the requested hostname.",
+                key = buildCertificateKey(certificate),
+                techFacts = buildTlsTechFacts(
                     url,
                     context,
                     exception,
-                    "The TLS certificate presented by the server does not match the requested hostname.",
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         if (c.has<SSLPeerUnverifiedException>()) {
             return failure(
-                SiteProblemType.TLS_CERTIFICATE_UNTRUSTED,
-                buildTlsFailureDetails(
+                type = SiteProblemType.TLS_CERTIFICATE_UNTRUSTED,
+                details = "The server presented a TLS certificate that could not be trusted.",
+                key = buildCertificateKey(certificate),
+                techFacts = buildTlsTechFacts(
                     url,
                     context,
                     exception,
-                    "The TLS certificate presented by the server could not be verified.",
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
@@ -564,28 +592,34 @@ object SiteChecker {
             c.has<SSLException>()
         ) {
             return failure(
-                SiteProblemType.TLS_HANDSHAKE_FAILED,
-                buildTlsFailureDetails(
+                type = SiteProblemType.TLS_HANDSHAKE_FAILED,
+                details = "The TLS handshake could not be completed.",
+                key = buildTlsHandshakeKey(
+                    exception,
+                    certificate,
+                ),
+                techFacts = buildTlsTechFacts(
                     url,
                     context,
                     exception,
-                    "The TLS handshake could not be completed.",
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         if (c.has<UnknownHostException>()) {
             return failure(
-                SiteProblemType.DNS_UNAVAILABLE,
-                buildDnsFailureDetails(
+                type = SiteProblemType.DNS_UNAVAILABLE,
+                details = "The hostname could not be resolved to an IP address.",
+                key = "",
+                techFacts = buildDnsTechFacts(
                     url,
                     context,
                     exception,
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
@@ -604,40 +638,52 @@ object SiteChecker {
             }
 
             return failure(
-                type,
-                buildConnectionFailureDetails(
+                type = type,
+                details = when (type) {
+                    SiteProblemType.READ_TIMEOUT ->
+                        "The server did not respond within the allowed time."
+
+                    else ->
+                        "The connection to the server timed out."
+                },
+                key = "",
+                techFacts = buildConnectionTechFacts(
                     url,
                     context,
                     exception,
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         if (c.has<ConnectException>()) {
             return failure(
-                SiteProblemType.CONNECTION_REFUSED,
-                buildConnectionFailureDetails(
+                type = SiteProblemType.CONNECTION_REFUSED,
+                details = "The server refused the connection.",
+                key = "",
+                techFacts = buildConnectionTechFacts(
                     url,
                     context,
                     exception,
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         if (c.has<NoRouteToHostException>()) {
             return failure(
-                SiteProblemType.CONNECTION_FAILED,
-                buildConnectionFailureDetails(
+                type = SiteProblemType.CONNECTION_FAILED,
+                details = "There was no route to the server.",
+                key = "",
+                techFacts = buildConnectionTechFacts(
                     url,
                     context,
                     exception,
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
@@ -649,38 +695,44 @@ object SiteChecker {
                 }
             ) {
                 return failure(
-                    SiteProblemType.CONNECTION_RESET,
-                    buildConnectionFailureDetails(
+                    type = SiteProblemType.CONNECTION_RESET,
+                    details = "The connection was unexpectedly reset by the remote server.",
+                    key = "",
+                    techFacts = buildConnectionTechFacts(
                         url,
                         context,
                         exception,
                     ),
-                    exception,
-                    context,
+                    exception = exception,
+                    context = context,
                 )
             }
 
             return failure(
-                SiteProblemType.CONNECTION_FAILED,
-                buildConnectionFailureDetails(
+                type = SiteProblemType.CONNECTION_FAILED,
+                details = "The connection to the server could not be established.",
+                key = "",
+                techFacts = buildConnectionTechFacts(
                     url,
                     context,
                     exception,
                 ),
-                exception,
-                context,
+                exception = exception,
+                context = context,
             )
         }
 
         return failure(
-            SiteProblemType.CONNECTION_FAILED,
-            buildConnectionFailureDetails(
+            type = SiteProblemType.CONNECTION_FAILED,
+            details = "The connection to the server could not be established.",
+            key = "",
+            techFacts = buildConnectionTechFacts(
                 url,
                 context,
                 exception,
             ),
-            exception,
-            context,
+            exception = exception,
+            context = context,
         )
     }
 
@@ -803,68 +855,264 @@ object SiteChecker {
     private fun failure(
         type: SiteProblemType,
         details: String,
+        key: String,
+        techFacts: String?,
         exception: Throwable? = null,
         context: CheckContext? = null,
     ) = SiteCheckResult.Failure(
         type = type,
         details = details,
+        key = key.take(255),
         exceptionType = exception?.let { it::class.java.name },
         exceptionMessage = exception?.message,
-        remoteAddress = context?.connectedAddress?.let { "${it.address.hostAddress}:${it.port}" },
-        techFacts = buildTechFacts(context),
+        remoteAddress = context?.connectedAddress?.let {
+            "${it.address.hostAddress}:${it.port}"
+        },
+        techFacts = techFacts,
     )
 
-    private fun buildTechFacts(context: CheckContext?): String? {
-        if (context == null) return null
-        val facts = mutableListOf<String>()
-        if (context.dnsAddresses.isNotEmpty()) {
-            facts += "DNS: " + context.dnsAddresses.joinToString(", ") { it.hostAddress }
+    private fun buildCertificateExpiryKey(
+        certificate: X509Certificate?,
+    ): String {
+        if (certificate == null) {
+            return ""
         }
-        context.connectedAddress?.let {
-            facts += "Remote: ${it.address.hostAddress}:${it.port}"
-        }
-        context.protocol?.let {
-            facts += "Protocol: $it"
-        }
-        context.handshake?.let {
-            facts += "TLS: ${it.tlsVersion}, Cipher: ${it.cipherSuite}"
-        }
-        if (facts.isEmpty()) return null
-        return facts.joinToString("; ")
+
+        return "${certificate.notAfter.toInstant()}:${certificateSha256(certificate)}"
+            .take(255)
     }
 
-    private fun isHostnameMismatch(
+    private fun buildCertificateNotYetValidKey(
+        certificate: X509Certificate?,
+    ): String {
+        if (certificate == null) {
+            return ""
+        }
+
+        return "${certificate.notBefore.toInstant()}:${certificateSha256(certificate)}"
+            .take(255)
+    }
+
+    private fun buildCertificateKey(
+        certificate: X509Certificate?,
+    ): String {
+        if (certificate == null) {
+            return ""
+        }
+
+        return certificateSha256(certificate)
+            .take(255)
+    }
+
+    private fun buildTlsHandshakeKey(
         exception: Throwable,
-    ): Boolean {
+        certificate: X509Certificate?,
+    ): String {
+        if (certificate != null) {
+            return certificateSha256(certificate)
+                .take(255)
+        }
 
-        return generateSequence(exception) { it.cause }
-            .any { throwable ->
-                val message = throwable.message
-                    ?.lowercase()
-                    ?: return@any false
+        val cause = generateSequence(exception) { it.cause }
+            .lastOrNull()
 
-                message.contains("hostname") &&
-                        (
-                                message.contains("does not match") ||
-                                        message.contains("not verified") ||
-                                        message.contains("no name matching") ||
-                                        message.contains("doesn't match")
-                                )
-            }
+        return cause
+            ?.message
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.take(255)
+            ?: ""
     }
 
-    private fun buildTlsFailureDetails(
-        url: String,
+    private fun buildCertificateExpiredDetails(
+        expiry: Instant?,
+    ): String {
+        if (expiry == null) {
+            return "The server certificate has expired."
+        }
+
+        val daysAgo = ChronoUnit.DAYS.between(
+            expiry,
+            Instant.now(),
+        )
+
+        val formattedDate = expiry
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDateTime()
+            .toString()
+            .replace('T', ' ')
+
+        return when {
+            daysAgo == 0L ->
+                "The server certificate expired on $formattedDate."
+
+            daysAgo == 1L ->
+                "The server certificate expired on $formattedDate, 1 day ago."
+
+            else ->
+                "The server certificate expired on $formattedDate, $daysAgo days ago."
+        }
+    }
+
+    private fun buildCertificateNotYetValidDetails(
+        validFrom: Instant?,
+    ): String {
+        if (validFrom == null) {
+            return "The server certificate is not valid yet."
+        }
+
+        val daysUntil = ChronoUnit.DAYS.between(
+            Instant.now(),
+            validFrom,
+        )
+
+        val formattedDate = validFrom
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDateTime()
+            .toString()
+            .replace('T', ' ')
+
+        return when {
+            daysUntil <= 0 ->
+                "The server certificate is not valid yet and should become valid on $formattedDate."
+
+            daysUntil == 1L ->
+                "The server certificate will become valid on $formattedDate, in 1 day."
+
+            else ->
+                "The server certificate will become valid on $formattedDate, in $daysUntil days."
+        }
+    }
+
+    private fun checkCertificateExpiry(
+        response: Response,
         context: CheckContext,
-        exception: Throwable,
-        description: String,
+    ): SiteCheckResult {
+
+        val certificate = response.handshake
+            ?.peerCertificates
+            ?.filterIsInstance<X509Certificate>()
+            ?.firstOrNull()
+            ?: return SiteCheckResult.Success
+
+        val now = Instant.now()
+        val expiry = certificate.notAfter.toInstant()
+
+        if (expiry.isBefore(now)) {
+            return failure(
+                type = SiteProblemType.TLS_CERTIFICATE_EXPIRED,
+                details = buildCertificateExpiredDetails(expiry),
+                key = buildCertificateExpiryKey(certificate),
+                techFacts = buildCertificateExpiryTechFacts(
+                    response,
+                    certificate,
+                ),
+                context = context,
+            )
+        }
+
+        if (
+            expiry.isBefore(
+                now.plus(30, ChronoUnit.DAYS)
+            )
+        ) {
+            return failure(
+                type = SiteProblemType.TLS_CERTIFICATE_EXPIRING,
+                details = buildCertificateExpiringDetails(expiry),
+                key = buildCertificateExpiryKey(certificate),
+                techFacts = buildCertificateExpiryTechFacts(
+                    response,
+                    certificate,
+                ),
+                context = context,
+            )
+        }
+
+        return SiteCheckResult.Success
+    }
+
+    private fun buildCertificateExpiringDetails(
+        expiry: Instant,
+    ): String {
+        val daysRemaining = ChronoUnit.DAYS.between(
+            Instant.now(),
+            expiry,
+        )
+
+        val formattedDate = expiry
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDateTime()
+            .toString()
+            .replace('T', ' ')
+
+        return when {
+            daysRemaining <= 0 ->
+                "The server certificate expires on $formattedDate."
+
+            daysRemaining == 1L ->
+                "The server certificate expires on $formattedDate, in 1 day."
+
+            else ->
+                "The server certificate expires on $formattedDate, in $daysRemaining days."
+        }
+    }
+
+    private fun buildCertificateExpiryTechFacts(
+        response: Response,
+        certificate: X509Certificate,
     ): String {
 
         return buildString {
+            appendLine("URL: ${response.request.url}")
+            appendLine("HTTP status: ${response.code}")
+            appendLine("HTTP protocol: ${response.protocol}")
 
-            appendLine(description)
+            response.handshake?.let {
+                appendLine("TLS version: ${it.tlsVersion}")
+                appendLine("Cipher suite: ${it.cipherSuite}")
+            }
+
             appendLine()
+            appendLine("Certificate:")
+            appendLine("  Subject: ${certificate.subjectX500Principal.name}")
+            appendLine("  Issuer: ${certificate.issuerX500Principal.name}")
+            appendLine("  Serial number: ${certificate.serialNumber.toString(16)}")
+            appendLine("  Valid from: ${certificate.notBefore.toInstant()}")
+            appendLine("  Valid until: ${certificate.notAfter.toInstant()}")
+            appendLine("  SHA-256: ${certificateSha256(certificate)}")
 
+            val san = certificate.subjectAlternativeNames
+                ?.mapNotNull { it.getOrNull(1)?.toString() }
+                .orEmpty()
+
+            if (san.isNotEmpty()) {
+                appendLine("  Subject alternative names:")
+
+                san.forEach {
+                    appendLine("    $it")
+                }
+            }
+        }.trim()
+    }
+
+    private fun certificateSha256(
+        certificate: X509Certificate,
+    ): String {
+        return MessageDigest
+            .getInstance("SHA-256")
+            .digest(certificate.encoded)
+            .joinToString(":") {
+                "%02X".format(it)
+            }
+    }
+
+    private fun buildTlsTechFacts(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
+    ): String {
+
+        return buildString {
             appendLine("URL: $url")
 
             appendNetworkInformation(context)
@@ -878,7 +1126,9 @@ object SiteChecker {
                 appendLine()
                 appendLine("Certificate chain:")
 
-                context.certificateChain.forEachIndexed { index, certificate ->
+                context.certificateChain.forEachIndexed {
+                        index,
+                        certificate ->
                     appendCertificate(
                         index,
                         certificate,
@@ -902,10 +1152,7 @@ object SiteChecker {
         appendLine("  Serial number: ${certificate.serialNumber.toString(16)}")
         appendLine("  Valid from: ${certificate.notBefore.toInstant()}")
         appendLine("  Valid until: ${certificate.notAfter.toInstant()}")
-
-        appendLine(
-            "  SHA-256: ${certificateSha256(certificate)}"
-        )
+        appendLine("  SHA-256: ${certificateSha256(certificate)}")
 
         val san = certificate.subjectAlternativeNames
             ?.mapNotNull { it.getOrNull(1)?.toString() }
@@ -922,16 +1169,46 @@ object SiteChecker {
         appendLine()
     }
 
-    private fun certificateSha256(
-        certificate: X509Certificate,
+    private fun buildDnsTechFacts(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
     ): String {
 
-        return MessageDigest
-            .getInstance("SHA-256")
-            .digest(certificate.encoded)
-            .joinToString(":") {
-                "%02X".format(it)
+        return buildString {
+            appendLine("URL: $url")
+
+            if (context.dnsAddresses.isNotEmpty()) {
+                appendLine("Resolved addresses:")
+
+                context.dnsAddresses.forEach {
+                    appendLine("  ${it.hostAddress}")
+                }
+            } else {
+                appendLine("Resolved addresses: none")
             }
+
+            appendLine()
+            appendException(exception)
+            appendTiming(context)
+        }.trim()
+    }
+
+    private fun buildConnectionTechFacts(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
+    ): String {
+
+        return buildString {
+            appendLine("URL: $url")
+
+            appendNetworkInformation(context)
+
+            appendLine()
+            appendException(exception)
+            appendTiming(context)
+        }.trim()
     }
 
     private fun StringBuilder.appendNetworkInformation(
@@ -1040,162 +1317,14 @@ object SiteChecker {
         }
     }
 
-    private fun buildDnsFailureDetails(
-        url: String,
-        context: CheckContext,
-        exception: Throwable,
-    ): String {
-
-        return buildString {
-            appendLine(
-                "The hostname could not be resolved to an IP address."
-            )
-            appendLine()
-
-            appendLine("URL: $url")
-
-            if (context.dnsAddresses.isNotEmpty()) {
-                appendLine("Resolved addresses:")
-
-                context.dnsAddresses.forEach {
-                    appendLine("  ${it.hostAddress}")
-                }
-            } else {
-                appendLine("Resolved addresses: none")
-            }
-
-            appendLine()
-            appendException(exception)
-            appendTiming(context)
-        }.trim()
-    }
-
-    private fun buildConnectionFailureDetails(
-        url: String,
-        context: CheckContext,
-        exception: Throwable,
-    ): String {
-
-        return buildString {
-
-            appendLine(
-                "The connection to the server could not be established."
-            )
-            appendLine()
-
-            appendLine("URL: $url")
-
-            appendNetworkInformation(context)
-
-            appendLine()
-            appendException(exception)
-
-            appendTiming(context)
-        }.trim()
-    }
-
-    private fun checkCertificateExpiry(
-        response: Response,
-        context: CheckContext,
-    ): SiteCheckResult {
-
-        val certificate = response.handshake
-            ?.peerCertificates
-            ?.filterIsInstance<X509Certificate>()
-            ?.firstOrNull()
-            ?: return SiteCheckResult.Success
-
-        val now = Instant.now()
-        val expiry = certificate.notAfter.toInstant()
-
-        if (expiry.isBefore(now)) {
-            return failure(
-                SiteProblemType.TLS_CERTIFICATE_EXPIRED,
-                buildCertificateExpiryDetails(
-                    response,
-                    certificate,
-                ),
-                context = context,
-            )
-        }
-
-        if (
-            expiry.isBefore(
-                now.plus(30, ChronoUnit.DAYS)
-            )
-        ) {
-            return failure(
-                SiteProblemType.TLS_CERTIFICATE_EXPIRING,
-                buildCertificateExpiryDetails(
-                    response,
-                    certificate,
-                ),
-                context = context,
-            )
-        }
-
-        return SiteCheckResult.Success
-    }
-
-    private fun buildCertificateExpiryDetails(
-        response: Response,
-        certificate: X509Certificate,
-    ): String {
-
-        val expiry = certificate.notAfter.toInstant()
-        val remaining = ChronoUnit.DAYS.between(
-            Instant.now(),
-            expiry,
-        )
-
-        return buildString {
-            appendLine(
-                if (expiry.isBefore(Instant.now())) {
-                    "The server certificate has expired."
-                } else {
-                    "The server certificate is approaching its expiration date."
-                }
-            )
-
-            appendLine()
-
-            appendLine("URL: ${response.request.url}")
-            appendLine("TLS version: ${response.handshake?.tlsVersion}")
-            appendLine("Cipher suite: ${response.handshake?.cipherSuite}")
-
-            appendLine()
-            appendLine("Certificate:")
-            appendLine("  Subject: ${certificate.subjectX500Principal.name}")
-            appendLine("  Issuer: ${certificate.issuerX500Principal.name}")
-            appendLine("  Valid from: ${certificate.notBefore.toInstant()}")
-            appendLine("  Valid until: $expiry")
-            appendLine("  Remaining validity: $remaining days")
-            appendLine("  SHA-256: ${certificateSha256(certificate)}")
-
-            val san = certificate.subjectAlternativeNames
-                ?.mapNotNull { it.getOrNull(1)?.toString() }
-                .orEmpty()
-
-            if (san.isNotEmpty()) {
-                appendLine("  Subject alternative names:")
-
-                san.forEach {
-                    appendLine("    $it")
-                }
-            }
-        }.trim()
-    }
-
-    private fun buildHttpDetails(
+    private fun buildHttpTechFacts(
         response: Response,
         description: String,
     ): String {
 
         return buildString {
-
             appendLine(description)
             appendLine()
-
             appendLine("URL: ${response.request.url}")
             appendLine("HTTP status: ${response.code}")
             appendLine("HTTP protocol: ${response.protocol}")
@@ -1221,9 +1350,91 @@ object SiteChecker {
             appendLine("Response headers:")
 
             response.headers.forEach { header ->
-                appendLine("  ${header.first}: ${header.second}")
+                appendLine(
+                    "  ${header.first}: ${header.second}"
+                )
             }
         }.trim()
+    }
+
+    private fun buildRedirectTechFacts(
+        responses: List<Response>,
+    ): String {
+
+        return buildString {
+            appendLine(
+                "Redirect chain:"
+            )
+
+            responses.forEachIndexed { index, response ->
+                appendLine(
+                    "  ${index + 1}. " +
+                            "${response.code} " +
+                            "${response.request.url}"
+                )
+
+                response.header("Location")?.let {
+                    appendLine("     Location: $it")
+                }
+            }
+        }.trim()
+    }
+
+    private fun isHostnameMismatch(
+        exception: Throwable,
+    ): Boolean {
+
+        return generateSequence(exception) { it.cause }
+            .any { throwable ->
+
+                val message = throwable.message
+                    ?.lowercase()
+                    ?: return@any false
+
+                message.contains("hostname") &&
+                        (
+                                message.contains("does not match") ||
+                                        message.contains("not verified") ||
+                                        message.contains("no name matching") ||
+                                        message.contains("doesn't match")
+                                )
+            }
+    }
+
+    private fun buildTlsFailureDetails(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
+        description: String,
+    ): String {
+
+        return description
+    }
+
+    private fun buildDnsFailureDetails(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
+    ): String {
+
+        return "The hostname could not be resolved to an IP address."
+    }
+
+    private fun buildConnectionFailureDetails(
+        url: String,
+        context: CheckContext,
+        exception: Throwable,
+    ): String {
+
+        return "The connection to the server could not be established."
+    }
+
+    private fun buildHttpDetails(
+        response: Response,
+        description: String,
+    ): String {
+
+        return description
     }
 
     private fun redirectChain(
@@ -1240,33 +1451,5 @@ object SiteChecker {
         }
 
         return result.asReversed()
-    }
-
-    private fun buildRedirectDetails(
-        responses: List<Response>,
-    ): String {
-
-        return buildString {
-
-            appendLine(
-                "The request exceeded the maximum allowed number of redirects."
-            )
-            appendLine()
-
-            appendLine("Redirect chain:")
-
-            responses.forEachIndexed { index, response ->
-
-                appendLine(
-                    "  ${index + 1}. " +
-                            "${response.code} " +
-                            "${response.request.url}"
-                )
-
-                response.header("Location")?.let {
-                    appendLine("     Location: $it")
-                }
-            }
-        }.trim()
     }
 }
