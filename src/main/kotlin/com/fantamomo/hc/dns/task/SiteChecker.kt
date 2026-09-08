@@ -12,6 +12,7 @@ import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordState
 import com.fantamomo.hc.dns.model.dns.RecordType
 import com.fantamomo.hc.dns.task.sc.SlackSiteCheckerConnector
+import com.fantamomo.hc.dns.util.WeakKeyMap
 import io.ktor.http.*
 import io.ktor.network.sockets.SocketTimeoutException
 import kotlinx.coroutines.*
@@ -37,14 +38,17 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import javax.net.ssl.*
 import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.toKotlinInstant
 
 object SiteChecker {
-    private val TIME_BETWEEN_RUNS by lazy { Config.SITE_CHECK_INTERVAL }
+    private val TLS_CERTIFICATE_EXPIRING_TIMEFRAME = 20.days
 
+    private val TIME_BETWEEN_RUNS by lazy { Config.SITE_CHECK_INTERVAL }
     private const val MAX_GLOBAL_CONCURRENCY = 128
     private const val MAX_TARGET_CONCURRENCY = 4
     private const val MAX_REQUESTS_PER_MINUTE = 30
@@ -66,6 +70,12 @@ object SiteChecker {
     private val scope = CoroutineScope(
         App.scope.coroutineContext + job + exceptionHandler
     )
+
+    private val sharedOkHttpClient: OkHttpClient by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        createSharedClient()
+    }
+
+    private val callContextMap = WeakKeyMap<Call, CheckContext>()
 
     private data class Site(
         val host: String,
@@ -163,6 +173,7 @@ object SiteChecker {
         }
 
         SlackSiteCheckerConnector.start()
+        SlackSiteCheckerConnector.waitForFullListCheck()
 
         logger.info("Site checker started")
 
@@ -296,7 +307,7 @@ object SiteChecker {
 
                     try {
                         SharedConstants.workSynchronizer.waitUntilUnlocked()
-                        logger.info("Checking site: ${site.host}") // todo: remove this line
+//                        logger.info("Checking site: ${site.host}") // todo: remove this line
 
                         @Suppress("HttpUrlsUsage")
                         val result = checkSite("http://${site.host}/")
@@ -391,10 +402,6 @@ object SiteChecker {
 
     private fun checkSite(url: String): SiteCheckResult {
 
-        val context = CheckContext(url)
-
-        val client = createClient(context)
-
         val request = Request.Builder()
             .url(url)
             .header(
@@ -409,11 +416,18 @@ object SiteChecker {
                         "image/avif,image/webp,image/apng,*/*;q=0.8"
             )
             .header("Accept-Language", "en-US,en;q=0.5")
-            .header("Accept-Encoding", "gzip, deflate")
+//            .header("Accept-Encoding", "gzip, deflate")
             .build()
 
+        val call = try {
+            sharedOkHttpClient.newCall(request)
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to create call for URL: $url", e)
+        }
+        val context = callContextMap[call] ?: throw IllegalStateException("No context found for call")
+
         return try {
-            client.newCall(request).execute().use { response ->
+            call.execute().use { response ->
                 checkResponse(response, context)
             }
         } catch (e: CancellationException) {
@@ -424,6 +438,8 @@ object SiteChecker {
                 exception = e,
                 context = context,
             )
+        } finally {
+            callContextMap.remove(call)
         }
     }
 
@@ -519,6 +535,18 @@ object SiteChecker {
         val c = generateSequence<Throwable>(exception) { it.cause }.toList()
 
         val certificate = context.certificateChain.firstOrNull()
+
+        if (c.firstOrNull { it is ProtocolException }?.message?.matches(Regex("^Too many follow-up requests: \\d+$")) == true) {
+            // I am not sure if this exception propagates to us
+            return failure(
+                SiteProblemType.TOO_MANY_REDIRECTS,
+                details = "Too many follow-up requests: 21 > 20",
+                key = "",
+                techFacts = "<not available>",
+                exception = exception,
+                context = context,
+            )
+        }
 
         if (c.has<CertificateExpiredException>()) {
             val expiry = certificate?.notAfter?.toInstant()
@@ -736,26 +764,21 @@ object SiteChecker {
         )
     }
 
-    private fun createClient(context: CheckContext): OkHttpClient {
+    private fun createSharedClient(): OkHttpClient {
         val baseTrustManager = createTrustManager()
-
-        val recordingTrustManager = RecordingTrustManager(
-            delegate = baseTrustManager,
-            context = context,
-        )
 
         val sslContext = SSLContext.getInstance("TLS")
 
         sslContext.init(
             null,
-            arrayOf(recordingTrustManager),
+            arrayOf(baseTrustManager),
             null,
         )
 
         return OkHttpClient.Builder()
             .sslSocketFactory(
                 sslContext.socketFactory,
-                recordingTrustManager,
+                baseTrustManager,
             )
 //            .hostnameVerifier { hostname, session ->
 //                val verifier = HttpsURLConnection
@@ -765,7 +788,7 @@ object SiteChecker {
 //            }
             .followRedirects(true)
             .followSslRedirects(true)
-            .eventListener(createEventListener(context))
+            .eventListenerFactory { createEventListener(it) }
             .connectTimeout(1.minutes)
             .readTimeout(1.minutes)
             .writeTimeout(1.minutes)
@@ -778,8 +801,11 @@ object SiteChecker {
     }
 
     private fun createEventListener(
-        context: CheckContext,
+        call: Call,
     ): EventListener {
+        val context = CheckContext(call.request().url.toString())
+
+        callContextMap[call] = context
 
         return object : EventListener() {
 
@@ -995,13 +1021,14 @@ object SiteChecker {
             ?.firstOrNull()
             ?: return SiteCheckResult.Success
 
-        val now = Instant.now()
-        val expiry = certificate.notAfter.toInstant()
+        val now = kotlin.time.Clock.System.now()
+        val javaExpiry = certificate.notAfter.toInstant()
+        val expiry = javaExpiry.toKotlinInstant()
 
-        if (expiry.isBefore(now)) {
+        if (expiry < now) {
             return failure(
                 type = SiteProblemType.TLS_CERTIFICATE_EXPIRED,
-                details = buildCertificateExpiredDetails(expiry),
+                details = buildCertificateExpiredDetails(javaExpiry),
                 key = buildCertificateExpiryKey(certificate),
                 techFacts = buildCertificateExpiryTechFacts(
                     response,
@@ -1011,14 +1038,10 @@ object SiteChecker {
             )
         }
 
-        if (
-            expiry.isBefore(
-                now.plus(30, ChronoUnit.DAYS)
-            )
-        ) {
+        if (expiry < (now + TLS_CERTIFICATE_EXPIRING_TIMEFRAME)) {
             return failure(
                 type = SiteProblemType.TLS_CERTIFICATE_EXPIRING,
-                details = buildCertificateExpiringDetails(expiry),
+                details = buildCertificateExpiringDetails(javaExpiry),
                 key = buildCertificateExpiryKey(certificate),
                 techFacts = buildCertificateExpiryTechFacts(
                     response,
@@ -1126,9 +1149,7 @@ object SiteChecker {
                 appendLine()
                 appendLine("Certificate chain:")
 
-                context.certificateChain.forEachIndexed {
-                        index,
-                        certificate ->
+                context.certificateChain.forEachIndexed { index, certificate ->
                     appendCertificate(
                         index,
                         certificate,
