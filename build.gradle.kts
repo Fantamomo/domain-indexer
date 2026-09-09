@@ -39,6 +39,8 @@ dependencies {
     // client
     implementation(ktorLibs.client.core)
     implementation(ktorLibs.client.okhttp)
+    implementation("io.ktor:ktor-client-okhttp-jvm:3.5.0")
+//    implementation("com.squareup.okhttp3:okhttp-java-net-cookiejar:5.0.0")
     implementation(ktorLibs.client.contentNegotiation)
     implementation(ktorLibs.client.encoding)
 
@@ -48,7 +50,6 @@ dependencies {
     implementation(libs.exposed.datetime)
     implementation(libs.exposed.json)
     implementation(libs.postgresql)
-    implementation("io.ktor:ktor-client-okhttp-jvm:3.5.0")
     runtimeOnly(libs.postgresql.r2dbc)
 
     // logging
