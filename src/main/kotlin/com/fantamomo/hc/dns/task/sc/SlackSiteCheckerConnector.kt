@@ -461,6 +461,52 @@ object SlackSiteCheckerConnector {
         }
     }
 
+    suspend fun removedDnsRecord(site: String) {
+        try {
+            val problem = database {
+                SiteProblemTable.select(
+                    SiteProblemTable.site,
+                    SiteProblemTable.itemId,
+                    SiteProblemTable.endpoint,
+                    SiteProblemTable.problem
+                )
+                    .where { SiteProblemTable.site eq site }
+                    .singleOrNull()
+                    ?.let {
+                        DestructuringComponent(
+                            it[SiteProblemTable.site],
+                            it[SiteProblemTable.itemId],
+                            it[SiteProblemTable.endpoint],
+                            it[SiteProblemTable.problem]
+                        )
+                    }
+            } ?: return
+
+            database {
+                SiteProblemTable.deleteWhere {
+                    SiteProblemTable.site eq site
+                }
+            }
+
+            sendDnsRecordRemovedMessage(
+                problemUrl = Url(problem.component3()),
+                problemSite = problem.component1(),
+                problemType = problem.component4()
+            )
+
+            if (!deleteChannel.trySend(problem.component2()).isSuccess || !running.load()) {
+                deleteSingleItem(problem.component2())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.error(
+                "Failed to process removed DNS record for site $site",
+                e
+            )
+        }
+    }
+
     private suspend fun getOrCreateSlackListId(): String? {
         cachedListId?.let { return it }
 
@@ -854,6 +900,60 @@ object SlackSiteCheckerConnector {
         }
     )
 
+    private suspend fun sendDnsRecordRemovedMessage(
+        problemUrl: Url,
+        problemSite: String,
+        problemType: SiteProblemType
+    ) = postMessage(
+        buildJsonObject {
+            putJsonArray("blocks") {
+                addJsonObject {
+                    put("type", "rich_text")
+                    putJsonArray("elements") {
+                        addJsonObject {
+                            put("type", "rich_text_section")
+                            putJsonArray("elements") {
+                                addJsonObject {
+                                    put("type", "emoji")
+                                    put("name", "white_check_mark")
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " Site problem resolved: ")
+                                    putJsonObject("style") {
+                                        put("bold", true)
+                                    }
+                                }
+                                addJsonObject {
+                                    put("type", "link")
+                                    put("url", problemUrl.toString())
+                                    put("text", problemSite)
+                                    put("truncated", true)
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put(
+                                        "text",
+                                        " is no longer a problem because its DNS record no longer exists."
+                                    )
+                                }
+                                addJsonObject {
+                                    put("type", "text")
+                                    put("text", " ")
+                                }
+                                addJsonObject {
+                                    put("type", "tag")
+                                    put("text", "(${problemType.slackOptionName})")
+                                    put("color", problemType.slackColor)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
     private suspend fun postMessage(payload: JsonObject) {
         val slackChannelForAlerts = Config.SLACK_CHANNEL_FOR_ALERTS
         if (slackChannelForAlerts.isBlank()) return
@@ -902,7 +1002,7 @@ object SlackSiteCheckerConnector {
                 }
 
                 else -> {
-                    logger.error("Slack notification failed — status: ${response.status}, body: $responseJson")
+                    logger.error("Slack notification failed - status: ${response.status}, response: $responseJson, request: $payloadJson")
                 }
             }
         }.onFailure {
@@ -1142,4 +1242,11 @@ object SlackSiteCheckerConnector {
             }
         }
     }
-}
+
+    suspend fun getProblemSites(): Set<String> =
+        database {
+            SiteProblemTable
+                .select(SiteProblemTable.site)
+                .map { it[SiteProblemTable.site] }
+                .toSet()
+        }}
