@@ -26,8 +26,13 @@ data class SiteProblem(
     }
 
     fun isDifferentFrom(other: SiteProblem): Boolean {
+        // this is interesting, one server always returns with connection reset and than with connection refused, so that it spams the channel with update messages
+        // we check this and if it is such a problem we block it
+        val connectionProblem = (problem == SiteProblemType.CONNECTION_REFUSED && other.problem == SiteProblemType.CONNECTION_RESET) ||
+                (problem == SiteProblemType.CONNECTION_RESET && other.problem == SiteProblemType.CONNECTION_REFUSED)
+
         return site != other.site ||
-                problem != other.problem ||
+                (!connectionProblem && problem != other.problem) ||
                 recordType != other.recordType ||
                 recordTarget != other.recordTarget ||
                 url != other.url ||
@@ -39,7 +44,7 @@ data class SiteProblem(
                 // because many Nameservers return more than one IP address or switch between them (e.g., Cloudflare, Vercel)
                 // so this would be unreliable and we would spam the channel with update messages
 //                remoteAddress != other.remoteAddress ||
-                exception != other.exception ||
+                (!connectionProblem && exception != other.exception) ||
 
                 // in favor of key
 //                techFacts != other.techFacts ||
