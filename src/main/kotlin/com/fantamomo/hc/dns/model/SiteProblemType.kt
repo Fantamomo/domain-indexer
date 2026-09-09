@@ -9,8 +9,8 @@ enum class SiteProblemType(
     TOO_MANY_REDIRECTS(
         "Too many redirects",
         "too_many_redirects",
-        "gray",
-        SiteProblemSeverity.HIGH
+        "yellow",
+        SiteProblemSeverity.MEDIUM
     ),
 
     DNS_UNAVAILABLE(
@@ -23,21 +23,21 @@ enum class SiteProblemType(
     DNS_RESOLUTION_FAILED(
         "DNS resolution failed",
         "dns_resolution_failed",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 
     DNS_TIMEOUT(
         "DNS resolution timed out",
         "dns_timeout",
-        "red",
-        SiteProblemSeverity.HIGH
+        "yellow",
+        SiteProblemSeverity.MEDIUM
     ),
 
     DNS_INCONSISTENT(
         "DNS inconsistent",
         "dns_inconsistent",
-        "red",
+        "brown",
         SiteProblemSeverity.MEDIUM
     ),
 
@@ -58,43 +58,43 @@ enum class SiteProblemType(
     CONNECTION_TIMEOUT(
         "Connection timed out",
         "connection_timeout",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 
     CONNECTION_RESET(
         "Connection reset",
         "connection_reset",
-        "red",
+        "purple",
         SiteProblemSeverity.HIGH
     ),
 
     CONNECTION_FAILED(
         "Connection failed",
         "connection_failed",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 
     READ_TIMEOUT(
         "Response timed out",
         "read_timeout",
-        "red",
-        SiteProblemSeverity.HIGH
+        "yellow",
+        SiteProblemSeverity.MEDIUM
     ),
 
     WRITE_TIMEOUT(
         "Request timed out",
         "write_timeout",
-        "red",
-        SiteProblemSeverity.HIGH
+        "yellow",
+        SiteProblemSeverity.MEDIUM
     ),
 
     TLS_CERTIFICATE_EXPIRED(
         "TLS certificate expired",
         "tls_certificate_expired",
         "red",
-        SiteProblemSeverity.HIGH
+        SiteProblemSeverity.CRITICAL
     ),
 
     TLS_CERTIFICATE_EXPIRING(
@@ -114,21 +114,21 @@ enum class SiteProblemType(
     TLS_CERTIFICATE_HOSTNAME_MISMATCH(
         "TLS certificate hostname mismatch",
         "tls_certificate_hostname_mismatch",
-        "red",
+        "purple",
         SiteProblemSeverity.HIGH
     ),
 
     TLS_CERTIFICATE_UNTRUSTED(
         "TLS certificate not trusted",
         "tls_certificate_untrusted",
-        "red",
+        "purple",
         SiteProblemSeverity.HIGH
     ),
 
     TLS_HANDSHAKE_FAILED(
         "TLS handshake failed",
         "tls_handshake_failed",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 
@@ -136,7 +136,7 @@ enum class SiteProblemType(
         "TLS protocol error",
         "tls_protocol_error",
         "red",
-        SiteProblemSeverity.HIGH
+        SiteProblemSeverity.CRITICAL
     ),
 
     SERVICE_UNAVAILABLE(
@@ -149,21 +149,21 @@ enum class SiteProblemType(
     SERVICE_NOT_FOUND(
         "Service not found",
         "service_not_found",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 
     HTTP_CLIENT_ERROR(
         "HTTP client error",
         "http_client_error",
-        "red",
-        SiteProblemSeverity.HIGH
+        "yellow",
+        SiteProblemSeverity.MEDIUM
     ),
 
     HTTP_PROTOCOL_ERROR(
         "HTTP protocol error",
         "http_protocol_error",
-        "red",
+        "orange",
         SiteProblemSeverity.HIGH
     ),
 }
