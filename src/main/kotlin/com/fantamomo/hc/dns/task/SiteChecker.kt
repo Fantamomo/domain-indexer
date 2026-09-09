@@ -12,12 +12,15 @@ import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordState
 import com.fantamomo.hc.dns.model.dns.RecordType
 import com.fantamomo.hc.dns.task.sc.SlackSiteCheckerConnector
+import com.fantamomo.hc.dns.util.JavaNetCookieJar
 import com.fantamomo.hc.dns.util.WeakKeyMap
 import io.ktor.http.*
 import io.ktor.network.sockets.SocketTimeoutException
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.toSet
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.io.IOException
 import okhttp3.*
@@ -71,6 +74,8 @@ object SiteChecker {
         App.scope.coroutineContext + job + exceptionHandler
     )
 
+    private val cookieJar = JavaNetCookieJar(null)
+
     private val sharedOkHttpClient: OkHttpClient by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         createSharedClient()
     }
@@ -109,31 +114,6 @@ object SiteChecker {
         var responseHeadersAt: Long? = null
 
         var failure: Throwable? = null
-    }
-
-    private class RecordingTrustManager(
-        private val delegate: X509TrustManager,
-        private val context: CheckContext,
-    ) : X509TrustManager {
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> =
-            delegate.acceptedIssuers
-
-        override fun checkClientTrusted(
-            chain: Array<X509Certificate>,
-            authType: String,
-        ) {
-            delegate.checkClientTrusted(chain, authType)
-        }
-
-        override fun checkServerTrusted(
-            chain: Array<X509Certificate>,
-            authType: String,
-        ) {
-            context.certificateChain = chain.toList()
-
-            delegate.checkServerTrusted(chain, authType)
-        }
     }
 
     private class TargetLimiter {
@@ -211,6 +191,8 @@ object SiteChecker {
     private suspend fun checkSites() = coroutineScope {
 
         SharedConstants.workSynchronizer.waitUntilUnlocked()
+        // set a new clean cookie handler
+        cookieJar.cookieHandler = CookieManager().apply { setCookiePolicy(CookiePolicy.ACCEPT_ORIGINAL_SERVER) }
 
         val sites = DatabaseManager.transaction {
             RecordTable
@@ -266,6 +248,9 @@ object SiteChecker {
                 .toList()
         }
 
+
+        resolveRemovedDnsRecords()
+
         if (sites.isEmpty()) {
             return@coroutineScope
         }
@@ -286,6 +271,49 @@ object SiteChecker {
                 }
             }
             .awaitAll()
+    }
+
+    private suspend fun resolveRemovedDnsRecords() {
+        val existingProblemSites = SlackSiteCheckerConnector.getProblemSites()
+
+        if (existingProblemSites.isEmpty()) {
+            return
+        }
+
+        val dnsRecordSites = DatabaseManager.transaction {
+            RecordTable
+                .select(
+                    RecordTable.host,
+                    RecordTable.name,
+                )
+                .map { row ->
+                    val host = row[RecordTable.host]
+                    val name = row[RecordTable.name]
+
+                    if (name.isEmpty() || name == "@") {
+                        host
+                    } else {
+                        "$name.$host"
+                    }
+                }
+                .toSet()
+        }
+
+        val removedSites = existingProblemSites.filter { site ->
+            site !in dnsRecordSites
+        }
+
+        if (removedSites.isEmpty()) {
+            return
+        }
+
+        logger.info(
+            "Found ${removedSites.size} site with problems whose DNS record was removed"
+        )
+
+        removedSites.forEach { site ->
+            SlackSiteCheckerConnector.removedDnsRecord(site)
+        }
     }
 
     private suspend fun checkTarget(
@@ -786,6 +814,7 @@ object SiteChecker {
 //
 //                verifier.verify(hostname, session)
 //            }
+            .cookieJar(cookieJar)
             .followRedirects(true)
             .followSslRedirects(true)
             .eventListenerFactory { createEventListener(it) }
