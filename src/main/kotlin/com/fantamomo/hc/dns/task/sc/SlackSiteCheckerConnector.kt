@@ -12,6 +12,7 @@ import com.fantamomo.hc.dns.model.SiteProblemSeverity
 import com.fantamomo.hc.dns.model.SiteProblemType
 import com.fantamomo.hc.dns.model.dns.RecordType
 import com.fantamomo.hc.dns.util.DestructuringComponent
+import com.fantamomo.hc.dns.util.DestructuringComponent4
 import com.fantamomo.hc.dns.util.humanReadable
 import io.ktor.client.call.*
 import io.ktor.client.request.*
@@ -422,28 +423,7 @@ object SlackSiteCheckerConnector {
     // if the site was not previously a problem, nothing will happen
     suspend fun success(site: String) {
         try {
-            val problem = database {
-                SiteProblemTable.select(
-                    SiteProblemTable.site,
-                    SiteProblemTable.itemId,
-                    SiteProblemTable.endpoint,
-                    SiteProblemTable.problem
-                )
-                    .where { SiteProblemTable.site eq site }
-                    .singleOrNull()
-                    ?.let {
-                        DestructuringComponent(
-                            it[SiteProblemTable.site],
-                            it[SiteProblemTable.itemId],
-                            it[SiteProblemTable.endpoint],
-                            it[SiteProblemTable.problem]
-                        )
-                    }
-            } ?: return
-
-            database {
-                SiteProblemTable.deleteWhere { SiteProblemTable.site eq site }
-            }
+            val problem = findAndDeleteProblem(site) ?: return
 
             sendNoLongerProblemMessage(
                 problemUrl = Url(problem.component3()),
@@ -461,32 +441,38 @@ object SlackSiteCheckerConnector {
         }
     }
 
+    private suspend fun findAndDeleteProblem(site: String): DestructuringComponent4<String, String, String, SiteProblemType>? {
+        val problem = database {
+            SiteProblemTable.select(
+                SiteProblemTable.site,
+                SiteProblemTable.itemId,
+                SiteProblemTable.endpoint,
+                SiteProblemTable.problem
+            )
+                .where { SiteProblemTable.site eq site }
+                .singleOrNull()
+                ?.let {
+                    DestructuringComponent(
+                        it[SiteProblemTable.site],
+                        it[SiteProblemTable.itemId],
+                        it[SiteProblemTable.endpoint],
+                        it[SiteProblemTable.problem]
+                    )
+                }
+        } ?: return null
+
+        database {
+            SiteProblemTable.deleteWhere {
+                SiteProblemTable.site eq site
+            }
+        }
+
+        return problem
+    }
+
     suspend fun removedDnsRecord(site: String) {
         try {
-            val problem = database {
-                SiteProblemTable.select(
-                    SiteProblemTable.site,
-                    SiteProblemTable.itemId,
-                    SiteProblemTable.endpoint,
-                    SiteProblemTable.problem
-                )
-                    .where { SiteProblemTable.site eq site }
-                    .singleOrNull()
-                    ?.let {
-                        DestructuringComponent(
-                            it[SiteProblemTable.site],
-                            it[SiteProblemTable.itemId],
-                            it[SiteProblemTable.endpoint],
-                            it[SiteProblemTable.problem]
-                        )
-                    }
-            } ?: return
-
-            database {
-                SiteProblemTable.deleteWhere {
-                    SiteProblemTable.site eq site
-                }
-            }
+            val problem = findAndDeleteProblem(site) ?: return
 
             sendDnsRecordRemovedMessage(
                 problemUrl = Url(problem.component3()),
